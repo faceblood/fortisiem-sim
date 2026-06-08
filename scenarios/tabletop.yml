@@ -1,0 +1,144 @@
+# Escenario tabletop mejorado — perfiles de actor con roles
+name: tabletop-enterprise-v2
+description: >
+  Simulación multi-fase con actores nombrados (attacker, victim, operator, infra).
+  Solo logs sintéticos para FortiSIEM 7.5 Enterprise org 1.
+
+org_id: 1
+timeline_minutes: 45
+
+metadata:
+  fortisiem_version: "7.5"
+  classification: simulated-only
+  exercise_type: tabletop
+
+actors:
+  default_profile: victim
+  profiles:
+    attacker:
+      user: jgarcia
+      domain: lab.local
+      src_ip: 198.51.100.77
+      reporting_ip: 192.0.2.10
+      hostname: ws-remote-01
+    victim:
+      user: svc_finance
+      domain: lab.local
+      src_ip: 10.10.10.50
+      reporting_ip: 10.255.9.21
+      hostname: ws-finance-01
+    operator:
+      user: ot.operator
+      domain: lab.local
+      src_ip: 10.10.30.5
+      reporting_ip: 10.255.9.30
+      hostname: scada-gw-01
+    infra:
+      user: administrator
+      domain: vsphere.local
+      src_ip: 10.10.40.10
+      reporting_ip: 10.255.9.40
+      hostname: vcenter-lab
+  pools:
+    users: [jgarcia, svc_finance, ot.operator]
+    src_ips: [10.10.10.50, 198.51.100.77]
+    reporting_ips: [10.255.9.21, 192.0.2.10]
+    hostnames: [ws-finance-01, ws-remote-01, scada-gw-01]
+    domains: [lab.local]
+
+phases:
+  initial_access:
+    description: Acceso inicial simulado desde actor externo
+    delay_before: 0
+    events:
+      - id: login_failed
+        actor: attacker
+        count: 10
+        delay: 0.4
+        jitter: 0.2
+      - id: login_success
+        actor: attacker
+        count: 1
+        delay: 1.0
+      - id: vpn_login_foreign_country
+        actor: attacker
+        count: 2
+        overrides:
+          country: CN
+
+  execution:
+    description: Ejecución simulada en víctima
+    delay_before: 2.0
+    events:
+      - id: ssh_login
+        actor: victim
+        count: 2
+      - id: suspicious_powershell_simulated
+        actor: victim
+        count: 2
+        delay: 1.5
+      - id: credential_access_simulated
+        actor: victim
+        count: 1
+
+  lateral_and_exfil:
+    description: Movimiento lateral y tráfico simulado
+    delay_before: 3.0
+    events:
+      - id: lateral_movement_simulated
+        actor: attacker
+        count: 2
+        delay: 2.0
+      - id: outbound_connection
+        actor: attacker
+        count: 20
+        delay: 0.25
+        jitter: 0.1
+      - id: archive_creation
+        actor: victim
+        count: 1
+
+  identity:
+    description: Cambios de identidad simulados
+    events:
+      - id: new_user_created
+        actor: attacker
+        count: 1
+      - id: privilege_change
+        actor: attacker
+        count: 1
+
+  infrastructure:
+    description: Infra virtual y web
+    events:
+      - id: hypervisor_login
+        actor: infra
+        count: 1
+      - id: container_exec
+        actor: infra
+        count: 2
+      - id: web_upload
+        actor: attacker
+        count: 3
+
+  ot_crisis:
+    description: OT degradado + crisis comms
+    delay_before: 5.0
+    events:
+      - id: telemetry_delay
+        actor: operator
+        count: 6
+        delay: 1.0
+      - id: alarm_suppressed
+        actor: operator
+        count: 1
+      - id: degraded_mode
+        actor: operator
+        count: 1
+      - id: incident_escalation
+        actor: operator
+        count: 1
+      - id: regulator_notification
+        count: 1
+      - id: holding_statement
+        count: 1

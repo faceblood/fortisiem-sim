@@ -1,0 +1,312 @@
+# FortiSIEM Lab — biblioteca de plantillas de eventos (simulación segura)
+version: 2
+defaults:
+  org_id: 1
+  target: 10.255.9.3
+  port: 514
+
+events:
+  login_success:
+    name: Generic login success
+    format: syslog_generic
+    severity: info
+    syslog_hostname: auth-gateway
+    fields: [src_ip, user, hostname, reporting_ip]
+    fortisiem_hints:
+      event_type: Generic-Login-Success
+    body: |
+      orgId={{org_id}} event=login_success user={{user}}@{{domain}} src={{src_ip}} host={{hostname}} reportingIp={{reporting_ip}} action=success simulated=true
+
+  login_failed:
+    name: Generic login failed
+    format: syslog_generic
+    severity: warning
+    syslog_hostname: auth-gateway
+    fields: [src_ip, user, hostname]
+    fortisiem_hints:
+      event_type: Generic-Login-Failed
+    body: |
+      orgId={{org_id}} event=login_failed user={{user}}@{{domain}} src={{src_ip}} host={{hostname}} reason=invalid_credentials simulated=true
+
+  vpn_login_foreign_country:
+    name: VPN login from foreign country (simulated)
+    format: fortigate
+    severity: notice
+    syslog_hostname: FGT-LAB-01
+    pri: 189
+    fields: [src_ip, user, country, reporting_ip]
+    fortisiem_hints:
+      event_type: FortiGate-SSLVPN-Login
+    defaults:
+      country: RU
+      vpn_type: ssl
+    body: |
+      date={{date}} time={{time}} devname=FGT-LAB-01 devid=FGT60FTK23000001 logid=0101039944 type=event subtype=vpn level=notice vd=root user={{user}} srcip={{src_ip}} dstip={{dst_ip}} action=login status=success msg="SSL VPN login success (simulated tabletop)" country={{country}} reportingIp={{reporting_ip}} simulated=true
+
+  ssh_login:
+    name: Linux SSH login
+    format: linux_auth
+    severity: info
+    syslog_hostname: "{{hostname}}"
+    fields: [src_ip, user, hostname]
+    fortisiem_hints:
+      event_type: Linux-Sshd-Session-Opened
+    body: |
+      sshd[{{epoch}}]: Accepted password for {{user}} from {{src_ip}} port 54321 ssh2 (simulated lab)
+
+  sudo_command:
+    name: Linux sudo command (simulated)
+    format: linux_auth
+    severity: notice
+    syslog_hostname: "{{hostname}}"
+    fields: [user, command, hostname]
+    fortisiem_hints:
+      event_type: Linux-Sudo-Command
+    defaults:
+      command: "/usr/bin/cat /etc/shadow-simulated"
+    body: |
+      sudo: {{user}} : TTY=pts/0 ; PWD=/home/{{user}} ; USER=root ; COMMAND={{command}} (simulated)
+
+  file_access_sensitive:
+    name: Sensitive file access (simulated)
+    format: cef
+    severity: medium
+    syslog_hostname: file-audit
+    fields: [user, file_path, src_ip, hostname]
+    fortisiem_hints:
+      event_type: Generic-File-Access
+    defaults:
+      file_path: "/data/classified/readme-simulated.txt"
+    body: |
+      CEF:0|LabCorp|FileAudit|1.0|6001|SensitiveFileAccess|6|src={{src_ip}} suser={{user}} filePath={{file_path}} msg=Simulated sensitive file read cs1Label=simulated cs1=true
+
+  credential_access_simulated:
+    name: Credential access (simulated, no real theft)
+    format: fortiedr_cef
+    severity: High
+    syslog_hostname: fortiedr-sensor
+    fields: [user, hostname, process]
+    fortisiem_hints:
+      event_type: FortiEDR-Credential-Access-Simulated
+    defaults:
+      process: "simulated-lsass-read.exe"
+    body: |
+      CEF:0|Fortinet|FortiEDR|7.0|CredentialAccessSimulated|High|rt={{timestamp}} suser={{user}} shost={{hostname}} fname={{process}} msg=Simulated credential access for tabletop exercise cs1Label=simulated cs1=true
+
+  shadow_access_simulated:
+    name: Shadow copy access (simulated)
+    format: windows_security
+    severity: warning
+    syslog_hostname: "{{hostname}}"
+    fields: [user, hostname, command]
+    fortisiem_hints:
+      event_type: Win-Security-Process-Create-Simulated
+    defaults:
+      command: "vssadmin list shadows (simulated tabletop)"
+    body: |
+      Microsoft-Windows-Security-Auditing: EventID=4688 SubjectUserName={{user}} Computer={{hostname}} ProcessCommandLine="{{command}}" Simulation=true
+
+  process_execution:
+    name: Process execution (benign simulated)
+    format: windows_security
+    severity: info
+    syslog_hostname: "{{hostname}}"
+    fields: [user, process, hostname]
+    defaults:
+      process: "notepad.exe"
+    body: |
+      Microsoft-Windows-Security-Auditing: EventID=4688 SubjectUserName={{user}} NewProcessName=C:\\Windows\\System32\\{{process}} Simulation=true
+
+  suspicious_powershell_simulated:
+    name: Suspicious PowerShell (encoded, simulated)
+    format: windows_security
+    severity: high
+    syslog_hostname: "{{hostname}}"
+    fields: [user, command, hostname]
+    defaults:
+      command: "powershell.exe -EncodedCommand U0lNVUxBVElPTi1PTkxZ (simulated)"
+    body: |
+      Microsoft-Windows-Security-Auditing: EventID=4104 ScriptBlockText="{{command}}" User={{user}} Host={{hostname}} Simulation=true
+
+  archive_creation:
+    name: Archive creation (simulated staging)
+    format: syslog_generic
+    severity: notice
+    syslog_hostname: "{{hostname}}"
+    fields: [user, file_path, hostname]
+    defaults:
+      file_path: "/tmp/staging-simulated-backup.zip"
+    body: |
+      event=archive_created user={{user}} path={{file_path}} host={{hostname}} action=create simulated=true
+
+  outbound_connection:
+    name: Outbound connection to lab C2 IP (simulated)
+    format: fortigate
+    severity: notice
+    syslog_hostname: FGT-LAB-01
+    fields: [src_ip, dst_ip, reporting_ip]
+    defaults:
+      dst_ip: "203.0.113.50"
+    body: |
+      date={{date}} time={{time}} devname=FGT-LAB-01 type=traffic subtype=forward level=notice srcip={{src_ip}} dstip={{dst_ip}} dstport=443 action=accept policyid=99 service=HTTPS msg="Simulated outbound HTTPS (tabletop)" reportingIp={{reporting_ip}} simulated=true
+
+  web_login:
+    name: Web application login
+    format: nginx_apache
+    severity: info
+    syslog_hostname: web-app-01
+    fields: [src_ip, user]
+    body: |
+      {{src_ip}} - {{user}} [{{timestamp}}] "POST /login HTTP/1.1" 200 512 "-" "Mozilla/5.0 (simulated)" # tabletop
+
+  web_upload:
+    name: Web file upload (simulated)
+    format: nginx_apache
+    severity: warning
+    syslog_hostname: web-app-01
+    fields: [src_ip, user, file_path]
+    defaults:
+      file_path: "resume-simulated.pdf"
+    body: |
+      {{src_ip}} - {{user}} [{{timestamp}}] "POST /upload HTTP/1.1" 201 2048 "https://intranet.lab/" "curl/8.0 (simulated tabletop)"
+
+  defacement_simulated:
+    name: Website defacement (simulated message only)
+    format: nginx_apache
+    severity: critical
+    syslog_hostname: web-app-01
+    pri: 130
+    fields: [src_ip, hostname]
+    body: |
+      {{src_ip}} - - [{{timestamp}}] "GET /index.html HTTP/1.1" 200 128 "SIMULATED-DEFACEMENT-TABLETOP host={{hostname}}" "-"
+
+  lateral_movement_simulated:
+    name: Lateral movement (simulated RDP)
+    format: windows_security
+    severity: high
+    syslog_hostname: "{{hostname}}"
+    fields: [user, src_ip, dst_ip, hostname]
+    defaults:
+      dst_ip: "10.10.20.15"
+    body: |
+      Microsoft-Windows-TerminalServices-RemoteConnectionManager: EventID=1149 User={{user}} SourceIP={{src_ip}} DestinationIP={{dst_ip}} Host={{hostname}} Simulation=true
+
+  new_user_created:
+    name: New AD user created (simulated)
+    format: windows_security
+    severity: notice
+    syslog_hostname: dc-lab-01
+    fields: [user, domain]
+    defaults:
+      new_user: "svc-tabletop-sim"
+    body: |
+      Microsoft-Windows-Security-Auditing: EventID=4720 TargetUserName={{new_user}} SubjectUserName={{user}} Domain={{domain}} Simulation=true
+
+  privilege_change:
+    name: Privilege / group change (simulated)
+    format: windows_security
+    severity: warning
+    syslog_hostname: dc-lab-01
+    fields: [user, domain]
+    defaults:
+      group: "Domain Admins (simulated tabletop)"
+    body: |
+      Microsoft-Windows-Security-Auditing: EventID=4728 MemberName={{user}} GroupName={{group}} Domain={{domain}} Simulation=true
+
+  backup_access:
+    name: Backup repository access (simulated)
+    format: syslog_generic
+    severity: notice
+    syslog_hostname: backup-srv
+    fields: [user, file_path, src_ip]
+    defaults:
+      file_path: "/backup/repo-simulated/"
+    body: |
+      event=backup_access user={{user}} src={{src_ip}} path={{file_path}} action=read simulated=true
+
+  hypervisor_login:
+    name: ESXi/vCenter login (simulated)
+    format: esxi_vcenter
+    severity: info
+    syslog_hostname: vcenter-lab
+    fields: [user, src_ip, reporting_ip]
+    defaults:
+      vc_user: "administrator@vsphere.local"
+    body: |
+      [{{timestamp}}] [{{reporting_ip}}] User {{vc_user}}@vsphere.local logged in from {{src_ip}} (simulated tabletop orgId={{org_id}})
+
+  container_exec:
+    name: Docker exec (simulated)
+    format: docker
+    severity: warning
+    syslog_hostname: docker-host-01
+    fields: [user, command, hostname]
+    defaults:
+      container: "app-simulated-01"
+      command: "/bin/sh -c 'echo simulated-exec'"
+    body: |
+      time="{{timestamp}}" level=warning msg="exec into container" container={{container}} user={{user}} cmd="{{command}}" host={{hostname}} simulated=true
+
+  telemetry_delay:
+    name: OT telemetry delay (simulated)
+    format: ot_scada
+    severity: warning
+    syslog_hostname: scada-gw
+    fields: [device_id, hostname]
+    defaults:
+      tag: "PLC1.Temperature"
+    body: |
+      [OT-SIM] device={{device_id}} tag={{tag}} alarm=TELEMETRY_DELAY delaySec=120 host={{hostname}} simulated=true
+
+  alarm_suppressed:
+    name: SCADA alarm suppressed (simulated)
+    format: ot_scada
+    severity: critical
+    syslog_hostname: scada-gw
+    pri: 130
+    fields: [user, device_id]
+    body: |
+      [OT-SIM] device={{device_id}} event=ALARM_SUPPRESSED operator={{user}} reason=tabletop_exercise simulated=true
+
+  degraded_mode:
+    name: System degraded mode (simulated)
+    format: ot_scada
+    severity: warning
+    syslog_hostname: scada-gw
+    fields: [hostname, device_id]
+    body: |
+      [OT-SIM] device={{device_id}} state=DEGRADED host={{hostname}} msg="Simulated degraded operation for crisis drill" simulated=true
+
+  incident_escalation:
+    name: Incident escalation comms (simulated)
+    format: crisis_comms
+    severity: notice
+    syslog_hostname: soc-comms
+    fields: [user]
+    body: |
+      [CRISIS-SIM] timestamp={{timestamp}} level=ESCALATION analyst={{user}} msg="Tabletop: escalate to IR manager (simulated)" orgId={{org_id}}
+
+  regulator_notification:
+    name: Regulator notification draft (simulated)
+    format: crisis_comms
+    severity: notice
+    syslog_hostname: legal-comms
+    body: |
+      [CRISIS-SIM] timestamp={{timestamp}} type=REGULATOR_NOTIFY status=DRAFT msg="Simulated regulatory notification template — no real breach" orgId={{org_id}}
+
+  public_leak:
+    name: Public leak rumor (simulated crisis)
+    format: crisis_comms
+    severity: critical
+    syslog_hostname: pr-comms
+    pri: 130
+    body: |
+      [CRISIS-SIM] timestamp={{timestamp}} channel=MONITORING msg="Simulated social media rumor — tabletop only" orgId={{org_id}}
+
+  holding_statement:
+    name: Holding statement (simulated PR)
+    format: crisis_comms
+    severity: info
+    syslog_hostname: pr-comms
+    body: |
+      [CRISIS-SIM] timestamp={{timestamp}} type=HOLDING_STATEMENT msg="We are investigating an simulated exercise event. No customer impact in lab." orgId={{org_id}}

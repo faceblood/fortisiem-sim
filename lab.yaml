@@ -1,0 +1,19 @@
+# Perfil de laboratorio FortiSIEM — valores por defecto del framework
+fortisiem:
+  target: 10.255.9.3
+  port: 514
+  org_id: 1
+  version: "7.5"
+  edition: enterprise
+
+simulation:
+  dry_run: true
+  spoof_src: true
+  rate_limit_eps: 50
+  default_delay: 0.5
+  default_jitter: 0.2
+  marker: simulated=true
+
+security:
+  lab_only: true
+  require_explicit_send: true

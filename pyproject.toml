@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fortisiem-sim"
+version = "2.0.0"
+description = "Secure FortiSIEM 7.5 lab log simulation framework (Scapy, YAML scenarios)"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+dependencies = [
+  "scapy>=2.5.0",
+  "PyYAML>=6.0",
+]
+
+[project.scripts]
+fortisiem-sim = "fortisiem_sim.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-dir]
+"" = "src"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

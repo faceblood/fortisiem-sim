@@ -1,0 +1,177 @@
+# FortiSIEM Sim v2
+
+Framework Python **mejorado** para simular logs hacia **FortiSIEM 7.5 Enterprise** en laboratorio/tabletop. Independiente de otros proyectos del repo. Solo generación segura de syslog vía **Scapy**.
+
+## Mejoras respecto a v1
+
+| Capacidad | v1 (`fortisiem-lab-framework`) | v2 (`fortisiem-sim`) |
+|-----------|-------------------------------|----------------------|
+| Perfil lab central | Hardcoded | `lab.yaml` |
+| Actores | Pools simples | **Perfiles nombrados** (`attacker`, `victim`, …) |
+| Validación | Runtime básico | `--validate` escenario + plantillas |
+| Reproducibilidad | No | `--seed` |
+| Timeline | No | `timeline_minutes` en escenario |
+| Salida | Texto | **text** o **jsonl** + resumen |
+| Catálogo | `--list-events` | + `--show-event ID` |
+| Health check | No | `--probe` |
+| Instalación | manual | `pip install .` → `fortisiem-sim` |
+| Tests | No | `pytest` |
+
+## Instalación
+
+```bash
+cd fortisiem-sim
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"  # o: pip install -r requirements.txt && pip install -e .
+```
+
+`requirements.txt`:
+
+```
+scapy>=2.5.0
+PyYAML>=6.0
+```
+
+## Uso rápido
+
+```bash
+# Validar antes de ejecutar
+fortisiem-sim --validate --config scenarios/tabletop.yml
+
+# Dry-run (default) — escenario completo
+fortisiem-sim --config scenarios/tabletop.yml
+
+# Solo fase con actores asignados
+fortisiem-sim --config scenarios/tabletop.yml --phase initial_access
+
+# Reproducible + JSONL
+fortisiem-sim --config scenarios/tabletop.yml --phase execution --seed 42 --output-format jsonl -q
+
+# Detalle de plantilla
+fortisiem-sim --show-event suspicious_powershell_simulated
+
+# Envío real (sudo, lab controlado)
+sudo fortisiem-sim --config scenarios/tabletop.yml --phase initial_access --send
+
+# Sin spoofing (red que bloquea IP falsificada)
+sudo fortisiem-sim --config scenarios/tabletop.yml --send --no-spoof
+
+# Probe (1 evento de prueba)
+sudo fortisiem-sim --probe --send --target 10.255.9.3
+```
+
+## Estructura
+
+```
+fortisiem-sim/
+├── lab.yaml                 # FortiSIEM 10.255.9.3:514, org 1
+├── templates/events.yaml    # 27 plantillas reutilizables
+├── scenarios/tabletop.yml   # Escenario con perfiles de actor
+├── schemas/                 # JSON Schema (referencia)
+├── src/fortisiem_sim/       # Paquete
+└── tests/
+```
+
+## Perfil de actor (nuevo)
+
+```yaml
+actors:
+  default_profile: victim
+  profiles:
+    attacker:
+      user: jgarcia
+      src_ip: 198.51.100.77
+      reporting_ip: 192.0.2.10
+      hostname: ws-remote-01
+  pools:
+    users: [jgarcia, svc_finance]
+```
+
+Evento con actor:
+
+```yaml
+- id: login_failed
+  actor: attacker
+  count: 10
+  delay: 0.4
+  jitter: 0.2
+```
+
+## Scapy — `send_syslog_scapy()`
+
+```python
+from fortisiem_sim.syslog import send_syslog_scapy
+
+send_syslog_scapy("10.255.9.3", 514, "<134>...", src_ip="192.0.2.10", use_spoof=True)
+```
+
+- **Privilegios:** root / `CAP_NET_RAW`
+- **Spoofing:** solo lab; si falla → `--no-spoof` (reporting IP en payload)
+- **Limitaciones:** NAT, firewall, rp_filter, ACLs FortiSIEM
+
+## CLI completa
+
+```
+--config, --lab, --templates
+--list-events, --list-formats, --show-event ID
+--validate, --probe
+--phase, --event, --count, --delay, --jitter, --seed
+--dry-run (default), --send
+--output-file, --output-format text|jsonl
+--randomize-src|user|timestamps|reporting-ip
+--target 10.255.9.3, --port 514, --org-id 1
+--iface, --no-spoof, -q, -v
+```
+
+## Formatos soportados
+
+| Formato | Eventos ejemplo |
+|---------|-----------------|
+| syslog_generic | login_success, backup_access |
+| cef | file_access_sensitive |
+| fortiedr_cef | credential_access_simulated |
+| fortigate | vpn_login_foreign_country, outbound_connection |
+| linux_auth | ssh_login, sudo_command |
+| windows_security | suspicious_powershell_simulated, privilege_change |
+| esxi_vcenter | hypervisor_login |
+| docker | container_exec |
+| nginx_apache | web_login, web_upload |
+| ot_scada | telemetry_delay, alarm_suppressed |
+| crisis_comms | incident_escalation, holding_statement |
+
+## Nuevo escenario en 10 minutos
+
+1. `cp scenarios/tabletop.yml scenarios/mi-ejercicio.yml`
+2. Editar `actors.profiles` y `phases`
+3. `fortisiem-sim --validate --config scenarios/mi-ejercicio.yml`
+4. `fortisiem-sim --config scenarios/mi-ejercicio.yml --dry-run`
+5. Event Search en FortiSIEM → reglas
+6. `sudo fortisiem-sim ... --send`
+
+## Troubleshooting (logs sí, incidentes no)
+
+| Problema | Acción |
+|----------|--------|
+| Unknown_Event_Type | Ajustar plantilla o Generic Parser |
+| Sin correlación | Alinear reporting IP / `--no-spoof` |
+| Regla no dispara | `--validate`, subir count, revisar lookback |
+| Spoof no funciona | `--no-spoof` + campo `reportingIp` en payload |
+
+## Reglas FortiSIEM sugeridas
+
+- Brute force: N× `login_failed` mismo `src_ip` / 5 min
+- VPN geo: `country` ∉ allowlist
+- PowerShell: EventID 4104 + Simulation=true
+- OT: `[OT-SIM]` + DEGRADED / ALARM_SUPPRESSED
+- Crisis: cadena `[CRISIS-SIM]` ESCALATION → HOLDING_STATEMENT
+
+## Tests
+
+```bash
+pip install pytest
+pytest tests/ -q
+```
+
+## Seguridad
+
+Uso **exclusivo** en lab autorizado. Marcador `simulated=true` inyectado automáticamente. Sin actividad ofensiva real.

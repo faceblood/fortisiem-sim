@@ -1,0 +1,50 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "FortiSIEM Sim Scenario",
+  "type": "object",
+  "required": ["name", "phases"],
+  "properties": {
+    "name": { "type": "string" },
+    "org_id": { "type": "integer", "default": 1 },
+    "timeline_minutes": { "type": "integer", "minimum": 0 },
+    "actors": {
+      "type": "object",
+      "properties": {
+        "default_profile": { "type": "string" },
+        "profiles": { "type": "object" },
+        "pools": { "type": "object" }
+      }
+    },
+    "phases": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": { "$ref": "#/$defs/phase" } },
+        { "type": "array", "items": { "$ref": "#/$defs/phase" } }
+      ]
+    }
+  },
+  "$defs": {
+    "phase": {
+      "type": "object",
+      "required": ["events"],
+      "properties": {
+        "description": { "type": "string" },
+        "delay_before": { "type": "number" },
+        "events": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id"],
+            "properties": {
+              "id": { "type": "string" },
+              "count": { "type": "integer", "minimum": 1 },
+              "delay": { "type": "number" },
+              "jitter": { "type": "number" },
+              "actor": { "type": "string" },
+              "overrides": { "type": "object" }
+            }
+          }
+        }
+      }
+    }
+  }
+}

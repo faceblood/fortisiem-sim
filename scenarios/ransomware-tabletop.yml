@@ -1,0 +1,200 @@
+# Escenario concreto: Ransomware Tabletop — Finance Compromise
+# FortiSIEM 7.5 Enterprise | org 1 | solo simulación en lab
+name: ransomware-tabletop-finance
+description: >
+  Compromiso simulado de estación finance: acceso VPN externo, PowerShell sospechoso,
+  acceso a credenciales (EDR simulado), staging de archivos, C2 outbound, escalada
+  de privilegios, impacto OT ligero y cadena de crisis/comunicación.
+
+org_id: 1
+timeline_minutes: 60
+
+metadata:
+  fortisiem_version: "7.5"
+  classification: simulated-only
+  exercise_type: ransomware-tabletop
+  target_sector: finance
+  mitre_campaign: "Simulated-Ransomware-Tabletop-2026"
+
+actors:
+  default_profile: finance_user
+  profiles:
+    external_actor:
+      user: jgarcia
+      domain: lab.local
+      src_ip: 198.51.100.88
+      reporting_ip: 192.0.2.55
+      hostname: ws-remote-vpn
+      extra:
+        country: RU
+    finance_user:
+      user: svc_finance
+      domain: lab.local
+      src_ip: 10.10.20.45
+      reporting_ip: 10.255.9.21
+      hostname: ws-finance-01
+    it_admin:
+      user: admin.it
+      domain: lab.local
+      src_ip: 10.10.10.10
+      reporting_ip: 10.255.9.22
+      hostname: ws-it-02
+    dc_service:
+      user: adm_backup
+      domain: lab.local
+      src_ip: 10.10.10.5
+      reporting_ip: 10.255.9.25
+      hostname: dc-lab-01
+    ot_operator:
+      user: ot.operator
+      domain: lab.local
+      src_ip: 10.10.30.8
+      reporting_ip: 10.255.9.30
+      hostname: scada-gw-01
+    ir_lead:
+      user: ir.manager
+      domain: lab.local
+      src_ip: 10.10.50.1
+      reporting_ip: 10.255.9.50
+      hostname: soc-console
+  pools:
+    users: [jgarcia, svc_finance, admin.it, ot.operator]
+    src_ips: [10.10.20.45, 198.51.100.88, 10.10.10.10]
+    reporting_ips: [10.255.9.21, 192.0.2.55, 10.255.9.22]
+    hostnames: [ws-finance-01, ws-remote-vpn, ws-it-02, scada-gw-01]
+    domains: [lab.local]
+
+phases:
+  recon_and_access:
+    description: "T1078 — Acceso inicial: fallos de login + VPN desde país externo"
+    delay_before: 0
+    events:
+      - id: login_failed
+        actor: external_actor
+        count: 12
+        delay: 0.4
+        jitter: 0.25
+      - id: login_success
+        actor: external_actor
+        count: 1
+        delay: 1.0
+      - id: vpn_login_foreign_country
+        actor: external_actor
+        count: 2
+        delay: 2.0
+        overrides:
+          country: RU
+
+  execution:
+    description: "T1059 / T1003 — Ejecución y acceso a credenciales simulado"
+    delay_before: 3.0
+    events:
+      - id: ssh_login
+        actor: finance_user
+        count: 2
+        delay: 1.0
+      - id: suspicious_powershell_simulated
+        actor: finance_user
+        count: 4
+        delay: 1.5
+        jitter: 0.5
+      - id: shadow_access_simulated
+        actor: finance_user
+        count: 2
+        delay: 2.0
+      - id: credential_access_simulated
+        actor: finance_user
+        count: 2
+        delay: 2.0
+      - id: process_execution
+        actor: finance_user
+        count: 3
+        delay: 0.8
+
+  staging_and_exfil:
+    description: "T1560 / T1048 — Staging y conexiones salientes simuladas"
+    delay_before: 5.0
+    events:
+      - id: file_access_sensitive
+        actor: finance_user
+        count: 5
+        delay: 1.0
+        overrides:
+          file_path: "/finance/confidential/payroll-simulated.xlsx"
+      - id: archive_creation
+        actor: finance_user
+        count: 2
+        delay: 2.0
+        overrides:
+          file_path: "/tmp/staging-ransom-simulated.zip"
+      - id: outbound_connection
+        actor: external_actor
+        count: 35
+        delay: 0.2
+        jitter: 0.1
+        overrides:
+          dst_ip: "203.0.113.66"
+      - id: web_upload
+        actor: external_actor
+        count: 4
+        delay: 1.0
+
+  lateral_movement:
+    description: "T1021 — Movimiento lateral simulado hacia IT/DC"
+    delay_before: 8.0
+    events:
+      - id: lateral_movement_simulated
+        actor: external_actor
+        count: 3
+        delay: 3.0
+        overrides:
+          dst_ip: "10.10.10.10"
+      - id: backup_access
+        actor: dc_service
+        count: 3
+        delay: 1.5
+      - id: sudo_command
+        actor: it_admin
+        count: 2
+        delay: 1.0
+
+  impact_identity:
+    description: "T1098 / T1486 — Escalada, nueva cuenta, impacto simulado"
+    delay_before: 10.0
+    events:
+      - id: new_user_created
+        actor: external_actor
+        count: 1
+        overrides:
+          new_user: "svc_recovery_simulated"
+      - id: privilege_change
+        actor: external_actor
+        count: 1
+      - id: defacement_simulated
+        actor: external_actor
+        count: 1
+
+  ot_and_crisis:
+    description: "Impacto OT secundario + tabletop de crisis/comunicación"
+    delay_before: 15.0
+    events:
+      - id: telemetry_delay
+        actor: ot_operator
+        count: 8
+        delay: 1.2
+      - id: degraded_mode
+        actor: ot_operator
+        count: 2
+        delay: 2.0
+      - id: alarm_suppressed
+        actor: ot_operator
+        count: 1
+      - id: incident_escalation
+        actor: ir_lead
+        count: 1
+      - id: regulator_notification
+        count: 1
+      - id: public_leak
+        count: 1
+      - id: holding_statement
+        count: 1
