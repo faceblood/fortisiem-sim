@@ -50,6 +50,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--config", type=Path, help="(alias de scenario) ruta a YAML/JSON")
     p.add_argument("--lab", type=Path, help=f"Perfil lab (default: {default_lab_path()})")
     p.add_argument("--templates", type=Path, help="Biblioteca events.yaml")
+    p.add_argument("--web", action="store_true", help="Lanzar frontend web (Flask)")
+    p.add_argument("--web-host", default="127.0.0.1", help="Host del frontend (default 127.0.0.1)")
+    p.add_argument("--web-port", type=int, default=8800, help="Puerto del frontend (default 8800)")
     p.add_argument("--list-scenarios", action="store_true", help="Listar escenarios disponibles")
     p.add_argument("--list-events", action="store_true", help="Tabla de eventos")
     p.add_argument("--list-formats", action="store_true", help="Formatos soportados")
@@ -129,6 +132,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"ERROR: plantillas no encontradas: {templates_path}", file=sys.stderr)
         return 1
     templates = load_templates(templates_path)
+
+    if args.web:
+        from .web import serve
+
+        serve(host=args.web_host, port=args.web_port, templates_path=templates_path)
+        return 0
 
     if args.list_scenarios:
         scenarios = list_scenarios()

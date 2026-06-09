@@ -77,6 +77,29 @@ sudo .venv/bin/fortisiem-sim --config scenarios/ransomware-tabletop.yml --phase 
 ./fsim ransomware recon_and_access --send --no-spoof
 ```
 
+## Frontend web (instanciar fases)
+
+UI ligera (Flask) para ver escenarios/fases y lanzarlas desde el navegador.
+
+```bash
+pip install flask          # o: pip install -e ".[web]"
+fortisiem-sim --web        # http://127.0.0.1:8800
+# ./fsim --web             # equivalente con el wrapper
+```
+
+- Lista escenarios y fases con su nº de eventos y actores.
+- Botón **«Instanciar fase»**: ejecuta en **dry-run** por defecto (sin esperas) y muestra los logs generados.
+- Casillas **«Enviar de verdad»** (`--send`, requiere lanzar el server con `sudo`) y **«Sin spoofing»** (`--no-spoof`).
+- Overrides de `count` y `seed`.
+
+Endpoints API: `GET /api/scenarios`, `GET /api/scenarios/<name>`, `POST /api/run`.
+
+Para envío real desde la web (lab):
+
+```bash
+sudo .venv/bin/fortisiem-sim --web --web-host 0.0.0.0 --web-port 8800
+```
+
 ## Estructura
 
 ```
@@ -91,6 +114,7 @@ fortisiem-sim/
 │   ├── render.py            # contexto, placeholders y formatos de salida
 │   ├── syslog.py            # envío Scapy
 │   ├── engine.py            # ejecución + resumen
+│   ├── web.py               # frontend Flask (--web)
 │   └── cli.py               # CLI
 └── tests/
 ```

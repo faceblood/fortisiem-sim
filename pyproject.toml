@@ -14,6 +14,9 @@ dependencies = [
   "PyYAML>=6.0",
 ]
 
+[project.optional-dependencies]
+web = ["flask>=3.0"]
+
 [project.scripts]
 fortisiem-sim = "fortisiem_sim.cli:main"
 
