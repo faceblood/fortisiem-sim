@@ -9,7 +9,8 @@ from typing import Any, Iterator
 
 from .assets import apply_config_c2_to_scenario
 from .loaders import load_lab_profile, merge_lab_into_options
-from .models import EmittedEvent, EventTemplate, RunSummary, Scenario, ScenarioEvent, SendOptions
+from .models import EmittedEmail, EmittedEvent, EventTemplate, RunSummary, Scenario, ScenarioEvent, SendOptions
+from .mail import render_email, send_html_email
 from .render import build_context, render_wire
 from .syslog import resolve_local_ip, send_syslog_scapy
 
@@ -145,12 +146,74 @@ def emit_one(
 
 
 def _count_timeline_events(scenario: Scenario, phase_filter: str) -> int:
-    return sum(
-        e.count
-        for phase in scenario.phases
-        if not phase_filter or phase.name == phase_filter
-        for e in phase.events
+    total = 0
+    for phase in scenario.phases:
+        if phase_filter and phase.name != phase_filter:
+            continue
+        if getattr(phase, "phase_type", "mitre") == "email":
+            total += len(phase.emails)
+        else:
+            total += sum(e.count for e in phase.events)
+    return total
+
+
+def emit_email_one(
+    scenario: Scenario,
+    template: dict[str, Any],
+    smtp_cfg: dict[str, Any],
+    options: SendOptions,
+    *,
+    phase_name: str,
+    actor_name: str,
+    to_address: str,
+    cc: str = "",
+    overrides: dict[str, str] | None = None,
+    out_fp=None,
+    summary: RunSummary | None = None,
+) -> EmittedEmail:
+    from .models import EventTemplate as ET
+    from .render import build_context
+
+    actor = actor_name or scenario.actors.default_profile
+    to_rendered = to_address
+    if "{{" in to_rendered:
+        dummy = ET(id="_email", name="", format="email", severity="info", body="")
+        ctx = build_context(scenario, dummy, options, actor_name=actor, overrides=overrides)
+        for key, val in ctx.items():
+            to_rendered = to_rendered.replace(f"{{{{{key}}}}}", val)
+    subject, html = render_email(template, scenario, actor, overrides, options)
+    result = send_html_email(
+        smtp_cfg,
+        to_address=to_rendered,
+        cc=cc,
+        subject=subject,
+        html_body=html,
+        dry_run=options.dry_run,
     )
+    emitted = EmittedEmail(
+        template_id=str(template.get("id", "")),
+        phase=phase_name,
+        to_address=result["to"],
+        subject=subject,
+        html_preview=html[:500],
+        sent=bool(result.get("sent")),
+        dry_run=options.dry_run,
+        actor=actor,
+        error=result.get("error", ""),
+    )
+    if summary:
+        summary.total += 1
+        if emitted.sent:
+            summary.sent += 1
+        else:
+            summary.dry_run += 1
+        summary.by_phase[phase_name or "(inline)"] = summary.by_phase.get(phase_name or "(inline)", 0) + 1
+    if out_fp:
+        out_fp.write(f"[EMAIL] to={emitted.to_address} subject={emitted.subject}\n")
+    if not options.quiet:
+        mode = "DRY" if options.dry_run else ("SENT" if emitted.sent else "FAIL")
+        print(f"[{mode}|EMAIL] phase={phase_name} to={emitted.to_address} subject={subject}")
+    return emitted
 
 
 def iter_scenario_stream(
@@ -163,8 +226,10 @@ def iter_scenario_stream(
     event_filter: str = "",
     no_delay: bool = False,
     out_fp=None,
+    email_templates: dict[str, Any] | None = None,
+    smtp_cfg: dict[str, Any] | None = None,
 ) -> Iterator[tuple[str, Any]]:
-    """Generador: ('phase', dict) al entrar en fase, ('event', EmittedEvent) por log."""
+    """Generador: ('phase', dict), ('event', EmittedEvent), ('email', EmittedEmail)."""
     apply_config_c2_to_scenario(scenario)
     lab = load_lab_profile(Path(options.lab_path) if options.lab_path else None)
     merge_lab_into_options(options, lab)
@@ -197,9 +262,31 @@ def iter_scenario_stream(
     for phase in scenario.phases:
         if phase_filter and phase.name != phase_filter:
             continue
-        yield ("phase", {"name": phase.name, "description": phase.description})
+        yield ("phase", {"name": phase.name, "description": phase.description, "phase_type": getattr(phase, "phase_type", "mitre")})
         if not no_delay and phase.delay_before > 0:
             time.sleep(phase.delay_before)
+        if getattr(phase, "phase_type", "mitre") == "email":
+            for em in phase.emails:
+                tmpl_dict = (email_templates or {}).get(em.template_id)
+                if not tmpl_dict:
+                    raise KeyError(f"Plantilla de correo no encontrada: {em.template_id}")
+                yield (
+                    "email",
+                    emit_email_one(
+                        scenario,
+                        {"id": em.template_id, **tmpl_dict},
+                        smtp_cfg or {},
+                        options,
+                        phase_name=phase.name,
+                        actor_name=em.actor or scenario.actors.default_profile,
+                        to_address=em.to_address,
+                        cc=em.cc,
+                        overrides=em.overrides,
+                        out_fp=out_fp,
+                        summary=summary,
+                    ),
+                )
+            continue
         for event in phase.events:
             tmpl = templates.get(event.id)
             if not tmpl:
@@ -232,6 +319,8 @@ def run_scenario(
     event_filter: str = "",
     no_delay: bool = False,
     collect: list[EmittedEvent] | None = None,
+    email_templates: dict[str, Any] | None = None,
+    smtp_cfg: dict[str, Any] | None = None,
 ) -> RunSummary:
     """Ejecuta el escenario. Con no_delay=True omite esperas. Con collect acumula eventos."""
     summary = RunSummary()
@@ -241,6 +330,7 @@ def run_scenario(
             scenario, templates, options, summary,
             phase_filter=phase_filter, event_filter=event_filter,
             no_delay=no_delay, out_fp=out_fp,
+            email_templates=email_templates, smtp_cfg=smtp_cfg,
         ):
             if kind == "event" and collect is not None:
                 collect.append(payload)

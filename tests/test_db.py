@@ -67,3 +67,13 @@ def test_load_scenario_via_storage(sql_db):
     ids = list_scenario_ids()
     sc = load_scenario_data(ids[0])
     assert sc.name
+
+
+def test_email_templates_seeded(sql_db):
+    from fortisiem_sim.db.email_repo import list_email_catalog, load_smtp_settings
+
+    catalog = list_email_catalog()
+    assert len(catalog) >= 3
+    assert any(c["id"] == "phishing_simulated" for c in catalog)
+    smtp = load_smtp_settings()
+    assert smtp["enabled"] is False

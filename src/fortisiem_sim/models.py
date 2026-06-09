@@ -78,11 +78,33 @@ class ScenarioEvent:
 
 
 @dataclass
+class ScenarioEmail:
+    template_id: str
+    to_address: str = ""
+    cc: str = ""
+    actor: str = ""
+    overrides: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
+class EmailTemplate:
+    id: str
+    name: str
+    subject: str
+    html_body: str
+    description: str = ""
+
+
+@dataclass
 class ScenarioPhase:
     name: str
     description: str = ""
+    phase_type: str = "mitre"
     delay_before: float = 0.0
     events: list[ScenarioEvent] = field(default_factory=list)
+    emails: list[ScenarioEmail] = field(default_factory=list)
+    mitre_tactic: str = ""
+    mitre_techniques: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -134,6 +156,19 @@ class EmittedEvent:
     spoof: bool
     sent: bool
     actor: str = ""
+
+
+@dataclass
+class EmittedEmail:
+    template_id: str
+    phase: str
+    to_address: str
+    subject: str
+    html_preview: str
+    sent: bool
+    dry_run: bool
+    actor: str = ""
+    error: str = ""
 
 
 @dataclass

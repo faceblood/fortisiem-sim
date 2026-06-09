@@ -57,7 +57,8 @@ def import_event_templates(new_events: dict, path: Path | None = None) -> tuple[
 
 def load_assets_data(path: Path | None = None) -> dict:
     if use_sql_storage():
-        return load_assets_dict()
+        from .db.assets_repo import load_assets_dict_with_smtp
+        return load_assets_dict_with_smtp()
     return load_assets_file(path)
 
 

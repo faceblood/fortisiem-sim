@@ -112,7 +112,18 @@ def load_assets_dict(conn: sqlite3.Connection | None = None) -> dict[str, Any]:
             conn.close()
 
 
+def load_assets_dict_with_smtp(conn: sqlite3.Connection | None = None) -> dict[str, Any]:
+    from .email_repo import load_smtp_settings
+
+    data = load_assets_dict(conn)
+    data["smtp"] = load_smtp_settings(conn)
+    return data
+
+
 def save_assets_dict(data: dict[str, Any], conn: sqlite3.Connection | None = None) -> None:
+    from .email_repo import save_smtp_settings
+
+    smtp = data.get("smtp")
     normalized = _normalize_assets(data)
     own = conn is None
     if own:
@@ -189,6 +200,8 @@ def save_assets_dict(data: dict[str, Any], conn: sqlite3.Connection | None = Non
         )
         c2_rows = [("ip", ip) for ip in c2.get("ips", [])] + [("uri", uri) for uri in c2.get("uris", [])]
         _replace_table_rows(conn, "c2_iocs", ["kind", "value"], c2_rows)
+        if smtp is not None:
+            save_smtp_settings(smtp, conn=conn)
         conn.commit()
     finally:
         if own:

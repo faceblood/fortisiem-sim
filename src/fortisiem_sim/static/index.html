@@ -32,7 +32,7 @@
           <div><label>seed</label><input id="run-seed" type="number" placeholder="—"></div>
         </div>
         <div class="check"><input type="checkbox" id="run-sse" checked><label for="run-sse">SSE en vivo (delays reales)</label></div>
-        <div class="check"><input type="checkbox" id="run-send"><label for="run-send">Enviar (--send, sudo)</label></div>
+        <div class="check"><input type="checkbox" id="run-send"><label for="run-send">Enviar syslog + correos (--send)</label></div>
         <div class="check"><input type="checkbox" id="run-nospoof"><label for="run-nospoof">Sin spoofing</label></div>
         <button type="button" class="btn btn-primary" style="width:100%;margin-top:8px" id="btn-run">Instanciar fase ▶</button>
         <button type="button" class="btn btn-danger" style="width:100%;margin-top:6px;display:none" id="btn-stop">Detener ■</button>
@@ -86,6 +86,25 @@
             <button type="button" class="btn btn-ghost btn-sm" id="btn-c2-import">Importar IOCs</button>
           </div>
         </div>
+      </div>
+      <div class="card">
+        <h2>SMTP (correos del escenario)</h2>
+        <p class="meta">Configura el relay para fases de tipo correo. Sin activar, los envíos son dry-run.</p>
+        <div class="check"><input type="checkbox" id="cfg-smtp-enabled"><label for="cfg-smtp-enabled">SMTP activo</label></div>
+        <div class="row">
+          <div><label>Host</label><input id="cfg-smtp-host" placeholder="smtp.lab.local"></div>
+          <div><label>Puerto</label><input id="cfg-smtp-port" type="number" value="587"></div>
+        </div>
+        <div class="row">
+          <div><label>Usuario</label><input id="cfg-smtp-user" autocomplete="off"></div>
+          <div><label>Contraseña</label><input id="cfg-smtp-pass" type="password" autocomplete="off"></div>
+        </div>
+        <div class="row">
+          <div><label>From (email)</label><input id="cfg-smtp-from" placeholder="soc@lab.local"></div>
+          <div><label>From (nombre)</label><input id="cfg-smtp-from-name" placeholder="CSIRT Lab"></div>
+        </div>
+        <div class="check"><input type="checkbox" id="cfg-smtp-tls" checked><label for="cfg-smtp-tls">STARTTLS</label></div>
+        <div class="check"><input type="checkbox" id="cfg-smtp-ssl"><label for="cfg-smtp-ssl">SSL directo (465)</label></div>
       </div>
       <div class="card">
         <h2>Pools IP</h2>
@@ -175,6 +194,31 @@
       </table>
     </div>
   </details>
+  <details class="card" id="email-catalog-panel">
+    <summary>Plantillas de correo HTML — <span id="email-catalog-count">0</span></summary>
+    <p class="meta">Plantillas reutilizables para fases de correo. Placeholders: <code>{{user}}</code>, <code>{{domain}}</code>, <code>{{hostname}}</code>, …</p>
+    <div class="row">
+      <div><label>ID plantilla</label><input id="em-tpl-id" placeholder="mi_correo"></div>
+      <div><label>Nombre</label><input id="em-tpl-name" placeholder="Mi correo tabletop"></div>
+    </div>
+    <label>Asunto</label>
+    <input id="em-tpl-subject" placeholder="[SIM] Alerta — {{hostname}}">
+    <label>Descripción</label>
+    <input id="em-tpl-desc" placeholder="Opcional">
+    <label>HTML body</label>
+    <textarea id="em-tpl-html" rows="8" placeholder="&lt;html&gt;...&lt;/html&gt;"></textarea>
+    <div class="row" style="margin-top:8px">
+      <button type="button" class="btn btn-success btn-sm" id="btn-em-save">Guardar plantilla</button>
+      <button type="button" class="btn btn-ghost btn-sm" id="btn-em-new">Nueva</button>
+    </div>
+    <div id="email-catalog-banner" class="banner dry" style="display:none;margin-top:8px"></div>
+    <div style="overflow:auto; max-height:200px;margin-top:8px">
+      <table class="list-table catalog-table">
+        <thead><tr><th>ID</th><th>Nombre</th><th>Asunto</th><th></th></tr></thead>
+        <tbody id="email-catalog-body"></tbody>
+      </table>
+    </div>
+  </details>
   <div id="sc-phases"></div>
   <div class="row" style="margin-top:8px">
     <div>
@@ -183,7 +227,11 @@
     </div>
     <div style="flex:0">
       <label>&nbsp;</label>
-      <button type="button" class="btn btn-ghost" id="btn-add-phase-mitre">+ Añadir fase</button>
+      <button type="button" class="btn btn-ghost" id="btn-add-phase-mitre">+ Fase MITRE</button>
+    </div>
+    <div style="flex:0">
+      <label>&nbsp;</label>
+      <button type="button" class="btn btn-ghost" id="btn-add-phase-email">+ Fase correo</button>
     </div>
   </div>
   <div style="margin-top:16px">

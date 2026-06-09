@@ -7,6 +7,7 @@ import yaml
 
 from .loaders import package_root
 from .c2 import DEFAULT_C2_IP, DEFAULT_C2_URI, merge_c2_import, normalize_c2, parse_c2_text
+from .mail import normalize_smtp
 from .mitre import tactic_by_id
 from .models import Scenario
 
@@ -51,6 +52,7 @@ def _empty_assets() -> dict[str, Any]:
         "linux_hosts": [],
         "pools": {"src_ips": [], "reporting_ips": []},
         "c2": normalize_c2(None),
+        "smtp": normalize_smtp(None),
     }
 
 
@@ -58,6 +60,7 @@ def _normalize_assets(data: dict[str, Any]) -> dict[str, Any]:
     ad = data.get("ad") or {}
     pools = data.get("pools") or {}
     c2 = normalize_c2(data.get("c2"))
+    smtp = normalize_smtp(data.get("smtp"))
     return {
         "ad": {
             "primary_domain": str(ad.get("primary_domain", "lab.local")),
@@ -76,6 +79,7 @@ def _normalize_assets(data: dict[str, Any]) -> dict[str, Any]:
             "c2_default_uri": c2["default_uri"],
         },
         "c2": c2,
+        "smtp": smtp,
     }
 
 

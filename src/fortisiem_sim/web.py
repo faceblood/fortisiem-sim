@@ -18,7 +18,7 @@ from .loaders import (
     parse_events_import,
 )
 from .mitre import build_event_catalog, index_events_by_tactic, list_tactics
-from .models import EmittedEvent, RunSummary, Scenario, SendOptions
+from .models import EmittedEmail, EmittedEvent, RunSummary, Scenario, SendOptions
 from .storage import (
     enable_sql_storage,
     list_scenario_refs,
@@ -85,11 +85,31 @@ def _scenario_payload(scenario_id: str) -> dict:
     }
 
 
+def _email_templates_dict() -> dict[str, dict[str, str]]:
+    from .db.email_repo import load_all_email_templates
+
+    return {
+        k: {
+            "id": v.id,
+            "name": v.name,
+            "subject": v.subject,
+            "html_body": v.html_body,
+            "description": v.description,
+        }
+        for k, v in load_all_email_templates().items()
+    }
+
+
 def _scenario_list_payload() -> list[dict]:
     items: list[dict] = []
     for scenario_id in list_scenario_refs():
         sc = load_scenario_data(scenario_id)
-        total_events = sum(sum(e.count for e in ph.events) for ph in sc.phases)
+        total_events = 0
+        for ph in sc.phases:
+            if ph.phase_type == "email":
+                total_events += len(ph.emails)
+            else:
+                total_events += sum(e.count for e in ph.events)
         items.append({
             "id": scenario_id,
             "file": f"{scenario_id}.yml",
@@ -245,6 +265,50 @@ def create_app(templates_path: Path | None = None):
         except (ValueError, TypeError, yaml.YAMLError) as exc:
             return jsonify({"error": str(exc)}), 400
 
+    @app.get("/api/emails")
+    def api_emails_list():
+        from .db.email_repo import list_email_catalog
+
+        catalog = list_email_catalog()
+        return jsonify({"catalog": catalog, "count": len(catalog), "ids": [c["id"] for c in catalog]})
+
+    @app.get("/api/emails/<template_id>")
+    def api_email_get(template_id: str):
+        from .db.email_repo import load_all_email_templates
+
+        templates = load_all_email_templates()
+        tmpl = templates.get(template_id)
+        if not tmpl:
+            return jsonify({"error": "Plantilla no encontrada"}), 404
+        return jsonify(asdict(tmpl))
+
+    @app.post("/api/emails")
+    def api_email_save():
+        from .db.email_repo import upsert_email_template
+
+        data = request.get_json(force=True) or {}
+        eid = str(data.get("id", "")).strip()
+        if not eid:
+            return jsonify({"error": "id requerido"}), 400
+        if not str(data.get("subject", "")).strip():
+            return jsonify({"error": "subject requerido"}), 400
+        if not str(data.get("html_body", "")).strip():
+            return jsonify({"error": "html_body requerido"}), 400
+        upsert_email_template(data, is_builtin=False)
+        from .db.email_repo import list_email_catalog as lec
+        return jsonify({"ok": True, "id": eid, "catalog": lec()})
+
+    @app.delete("/api/emails/<template_id>")
+    def api_email_delete(template_id: str):
+        from .db.email_repo import delete_email_template, list_email_catalog
+
+        try:
+            if not delete_email_template(template_id):
+                return jsonify({"error": "No encontrada"}), 404
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        return jsonify({"ok": True, "catalog": list_email_catalog()})
+
     @app.get("/api/events")
     def api_events():
         templates = _current_templates()
@@ -291,12 +355,17 @@ def create_app(templates_path: Path | None = None):
             })
             try:
                 templates = _current_templates()
+                assets = load_assets()
                 for kind, payload in iter_scenario_stream(
                     scenario, templates, options, summary,
                     phase_filter=phase, no_delay=False,
+                    email_templates=_email_templates_dict(),
+                    smtp_cfg=assets.get("smtp", {}),
                 ):
                     if kind == "phase":
                         yield _sse({"type": "phase", **payload})
+                    elif kind == "email":
+                        yield _sse({"type": "email", **asdict(payload)})
                     else:
                         yield _sse({"type": "event", **asdict(payload)})
                 yield _sse({
@@ -326,9 +395,12 @@ def create_app(templates_path: Path | None = None):
         collected: list[EmittedEvent] = []
         try:
             templates = _current_templates()
+            assets = load_assets()
             summary = run_scenario(
                 scenario, templates, options,
                 phase_filter=phase, no_delay=True, collect=collected,
+                email_templates=_email_templates_dict(),
+                smtp_cfg=assets.get("smtp", {}),
             )
         except (KeyError, ValueError, RuntimeError) as exc:
             return jsonify({"error": str(exc)})

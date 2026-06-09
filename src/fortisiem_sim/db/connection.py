@@ -115,6 +115,7 @@ CREATE TABLE IF NOT EXISTS scenario_phases (
     scenario_id TEXT NOT NULL REFERENCES scenarios(id) ON DELETE CASCADE,
     slug TEXT NOT NULL,
     description TEXT NOT NULL DEFAULT '',
+    phase_type TEXT NOT NULL DEFAULT 'mitre',
     mitre_tactic TEXT NOT NULL DEFAULT '',
     mitre_techniques_json TEXT NOT NULL DEFAULT '[]',
     sort_order INTEGER NOT NULL DEFAULT 0,
@@ -129,6 +130,40 @@ CREATE TABLE IF NOT EXISTS scenario_phase_events (
     actor TEXT NOT NULL DEFAULT '',
     overrides_json TEXT NOT NULL DEFAULT '{}',
     sort_order INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS scenario_phase_emails (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    phase_id INTEGER NOT NULL REFERENCES scenario_phases(id) ON DELETE CASCADE,
+    template_id TEXT NOT NULL,
+    to_address TEXT NOT NULL DEFAULT '',
+    cc TEXT NOT NULL DEFAULT '',
+    actor TEXT NOT NULL DEFAULT '',
+    overrides_json TEXT NOT NULL DEFAULT '{}',
+    sort_order INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS smtp_settings (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    enabled INTEGER NOT NULL DEFAULT 0,
+    host TEXT NOT NULL DEFAULT '',
+    port INTEGER NOT NULL DEFAULT 587,
+    username TEXT NOT NULL DEFAULT '',
+    password TEXT NOT NULL DEFAULT '',
+    from_address TEXT NOT NULL DEFAULT '',
+    from_name TEXT NOT NULL DEFAULT 'FortiSIEM Sim Lab',
+    use_tls INTEGER NOT NULL DEFAULT 1,
+    use_ssl INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS email_templates (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    html_body TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    is_builtin INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 """
 
@@ -153,6 +188,9 @@ def get_connection(path: Path | None = None) -> sqlite3.Connection:
 
 def init_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(scenario_phases)")}
+    if "phase_type" not in cols:
+        conn.execute("ALTER TABLE scenario_phases ADD COLUMN phase_type TEXT NOT NULL DEFAULT 'mitre'")
     conn.commit()
 
 
@@ -163,12 +201,14 @@ def database_is_empty(conn: sqlite3.Connection) -> bool:
 
 def ensure_database(seed_from_yaml: bool = True, path: Path | None = None) -> Path:
     """Crea schema y opcionalmente importa YAML si la BD está vacía."""
+    from .email_repo import seed_email_templates
     from .seed import seed_database
 
     target = db_path(path)
     conn = get_connection(target)
     try:
         init_schema(conn)
+        seed_email_templates(conn)
         if seed_from_yaml and database_is_empty(conn):
             seed_database(conn)
     finally:

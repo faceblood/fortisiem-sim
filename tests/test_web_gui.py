@@ -62,7 +62,19 @@ def test_api_config_get(client):
     data = r.get_json()
     assert "ad" in data
     assert "c2" in data
+    assert "smtp" in data
     assert "actor_keys" in data
+
+
+def test_api_emails(client):
+    r = client.get("/api/emails")
+    assert r.status_code == 200
+    data = r.get_json()
+    assert data["count"] >= 3
+    assert "catalog" in data
+    r2 = client.get("/api/emails/ir_alert_tabletop")
+    assert r2.status_code == 200
+    assert "html_body" in r2.get_json()
 
 
 def test_api_mitre_tactics(client):

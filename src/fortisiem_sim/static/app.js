@@ -49,6 +49,7 @@ const state = {
   expectedTotal: 0,
   eventCatalog: [],
   eventsByTactic: {},
+  emailCatalog: [],
 };
 
 /* ========== EJECUTAR ========== */
@@ -139,6 +140,14 @@ function runSse() {
       out.insertAdjacentHTML(
         "beforeend",
         `<div class="line-phase">▶ ${msg.name}${msg.description ? " — " + msg.description : ""}</div>`
+      );
+      out.scrollTop = out.scrollHeight;
+    } else if (msg.type === "email") {
+      state.eventCount++;
+      updateRunCounter();
+      out.insertAdjacentHTML(
+        "beforeend",
+        `<div class="line-email">📧 [${msg.dry_run ? "DRY" : msg.sent ? "SENT" : "FAIL"}] ${esc(msg.subject)} → ${esc(msg.to_address)}</div>`
       );
       out.scrollTop = out.scrollHeight;
     } else if (msg.type === "event") {
@@ -265,6 +274,16 @@ function fillConfigUI(data) {
   $("cfg-c2-default-uri").value = c2.default_uri || "";
   $("cfg-c2-ips").value = arrToLines(c2.ips);
   $("cfg-c2-uris").value = arrToLines(c2.uris);
+  const smtp = data.smtp || {};
+  $("cfg-smtp-enabled").checked = !!smtp.enabled;
+  $("cfg-smtp-host").value = smtp.host || "";
+  $("cfg-smtp-port").value = smtp.port ?? 587;
+  $("cfg-smtp-user").value = smtp.username || "";
+  $("cfg-smtp-pass").value = smtp.password || "";
+  $("cfg-smtp-from").value = smtp.from_address || "";
+  $("cfg-smtp-from-name").value = smtp.from_name || "";
+  $("cfg-smtp-tls").checked = smtp.use_tls !== false;
+  $("cfg-smtp-ssl").checked = !!smtp.use_ssl;
 
   const fwBody = $("cfg-firewalls");
   fwBody.innerHTML = "";
@@ -314,6 +333,17 @@ function collectConfig() {
     pools: {
       src_ips: linesToArr($("cfg-src-ips")),
       reporting_ips: linesToArr($("cfg-reporting-ips")),
+    },
+    smtp: {
+      enabled: $("cfg-smtp-enabled").checked,
+      host: $("cfg-smtp-host").value.trim(),
+      port: +$("cfg-smtp-port").value || 587,
+      username: $("cfg-smtp-user").value.trim(),
+      password: $("cfg-smtp-pass").value,
+      from_address: $("cfg-smtp-from").value.trim(),
+      from_name: $("cfg-smtp-from-name").value.trim() || "FortiSIEM Sim Lab",
+      use_tls: $("cfg-smtp-tls").checked,
+      use_ssl: $("cfg-smtp-ssl").checked,
     },
   };
 }
@@ -420,6 +450,7 @@ const _PHASE_SLUG_ALIASES = {
 };
 
 function syncPhaseWithMitre(ph) {
+  if (ph.phase_type === "email") return ph;
   let tid = ph.mitre_tactic || "";
   if (!tid && ph.name) {
     const bySlug = mitreTactics.find((t) => t.slug === ph.name);
@@ -476,6 +507,7 @@ function phaseFromTactic(tacticId, withEvents) {
   const tactic = getTacticById(tacticId);
   if (!tactic) return { name: "fase", description: "", events: [] };
   return {
+    phase_type: "mitre",
     name: tactic.slug,
     description: tactic.description,
     mitre_tactic: tactic.id,
@@ -665,7 +697,80 @@ function renderEventCatalogTable() {
     .join("");
 }
 
+function phaseFromEmail(name) {
+  const slug = (name || "correo_crisis").trim().replace(/\s+/g, "_").toLowerCase();
+  const firstTpl = state.emailCatalog[0]?.id || "ir_alert_tabletop";
+  return {
+    phase_type: "email",
+    name: slug,
+    description: "Fase de correos HTML (tabletop)",
+    emails: [{ template_id: firstTpl, to_address: "{{user}}@{{domain}}", cc: "", actor: "" }],
+  };
+}
+
+function emailTemplateOptions(selected) {
+  if (!state.emailCatalog.length) {
+    return `<option value="">— crea plantillas abajo —</option>`;
+  }
+  return state.emailCatalog
+    .map(
+      (t) =>
+        `<option value="${esc(t.id)}"${t.id === selected ? " selected" : ""}>${esc(t.id)} · ${esc(t.name)}</option>`
+    )
+    .join("");
+}
+
+function renderEmailPhaseBlock(ph, pi) {
+  const div = document.createElement("div");
+  div.className = "phase-block phase-email";
+  div.dataset.pi = pi;
+  div.dataset.phaseType = "email";
+  div.innerHTML = `
+    <div class="mitre-badge pill-email">📧 Fase correo · ${esc(ph.name || "email")}</div>
+    <div class="row">
+      <div><label>Nombre fase (slug)</label><input class="ph-name" value="${esc(ph.name || "email")}"></div>
+      <div style="flex:0"><label>&nbsp;</label><button type="button" class="btn btn-danger btn-sm rm-phase">Eliminar</button></div>
+    </div>
+    <label>Descripción</label>
+    <input class="ph-desc" value="${esc(ph.description || "")}">
+    <div class="emails-wrap"></div>
+    <button type="button" class="btn btn-ghost btn-sm add-email">+ Correo</button>`;
+  const wrap = div.querySelector(".emails-wrap");
+  (ph.emails || []).forEach((em) => wrap.appendChild(renderEmailRow(em, div)));
+  div.querySelector(".add-email").addEventListener("click", () => {
+    wrap.appendChild(
+      renderEmailRow(
+        { template_id: state.emailCatalog[0]?.id || "", to_address: "{{user}}@{{domain}}", cc: "", actor: "" },
+        div
+      )
+    );
+  });
+  div.querySelector(".rm-phase").addEventListener("click", () => {
+    scPhases.splice(pi, 1);
+    renderAllPhases();
+  });
+  return div;
+}
+
+function renderEmailRow(em, block) {
+  const row = document.createElement("div");
+  row.className = "event-row email-row";
+  row.innerHTML = `
+    <div><label>Plantilla</label><select class="em-tpl">${emailTemplateOptions(em.template_id)}</select></div>
+    <div><label>Para (to)</label><input class="em-to" value="${esc(em.to_address || "")}" placeholder="{{user}}@{{domain}}"></div>
+    <div><label>CC</label><input class="em-cc" value="${esc(em.cc || "")}"></div>
+    <div><label>actor</label><select class="em-actor">${actorOptions(em.actor)}</select></div>
+    <div><label>&nbsp;</label><button type="button" class="btn btn-ghost btn-sm rm-em">×</button></div>`;
+  row.querySelector(".rm-em").addEventListener("click", () => row.remove());
+  return row;
+}
+
 function renderPhaseBlock(ph, pi) {
+  if (ph.phase_type === "email") return renderEmailPhaseBlock(ph, pi);
+  return renderMitrePhaseBlock(ph, pi);
+}
+
+function renderMitrePhaseBlock(ph, pi) {
   const tactic = ph.mitre_tactic ? getTacticById(ph.mitre_tactic) : null;
   const synced = syncPhaseWithMitre({ ...ph });
   const showTactic = tactic || getTacticById(synced.mitre_tactic);
@@ -676,6 +781,7 @@ function renderPhaseBlock(ph, pi) {
   const div = document.createElement("div");
   div.className = "phase-block";
   div.dataset.pi = pi;
+  div.dataset.phaseType = "mitre";
   div.innerHTML = `
     <div class="mitre-badge">${esc(badgeText)}</div>
     <div class="row">
@@ -744,6 +850,25 @@ function renderAllPhases() {
 function readPhasesFromUI() {
   const phases = [];
   $("sc-phases").querySelectorAll(".phase-block").forEach((block) => {
+    const ptype = block.dataset.phaseType || "mitre";
+    if (ptype === "email") {
+      const emails = [];
+      block.querySelectorAll(".email-row").forEach((row) => {
+        emails.push({
+          template_id: row.querySelector(".em-tpl").value,
+          to_address: row.querySelector(".em-to").value.trim(),
+          cc: row.querySelector(".em-cc").value.trim(),
+          actor: row.querySelector(".em-actor").value,
+        });
+      });
+      phases.push({
+        phase_type: "email",
+        name: block.querySelector(".ph-name").value.trim().replace(/\s+/g, "_").toLowerCase() || "email",
+        description: block.querySelector(".ph-desc").value.trim(),
+        emails,
+      });
+      return;
+    }
     const events = [];
     block.querySelectorAll(".event-row").forEach((row) => {
       events.push(
@@ -755,6 +880,7 @@ function readPhasesFromUI() {
       );
     });
     phases.push({
+      phase_type: "mitre",
       name: phaseSlugFromTacticId(block.querySelector(".ph-mitre").value) || "phase",
       description: block.querySelector(".ph-desc").value.trim(),
       mitre_tactic: block.querySelector(".ph-mitre").value,
@@ -765,10 +891,62 @@ function readPhasesFromUI() {
   return phases;
 }
 
+function renderEmailCatalogTable() {
+  const body = $("email-catalog-body");
+  const countEl = $("email-catalog-count");
+  if (!body) return;
+  if (countEl) countEl.textContent = state.emailCatalog.length;
+  body.innerHTML = state.emailCatalog
+    .map(
+      (t) => `
+    <tr>
+      <td><code>${esc(t.id)}</code></td>
+      <td>${esc(t.name)}</td>
+      <td><span class="meta">${esc(t.subject)}</span></td>
+      <td><button type="button" class="btn btn-ghost btn-sm em-edit" data-id="${esc(t.id)}">Editar</button></td>
+    </tr>`
+    )
+    .join("");
+  body.querySelectorAll(".em-edit").forEach((btn) => {
+    btn.addEventListener("click", () => loadEmailTemplateEditor(btn.dataset.id));
+  });
+}
+
+async function loadEmailTemplateEditor(id) {
+  try {
+    const t = await api("/api/emails/" + encodeURIComponent(id));
+    $("em-tpl-id").value = t.id;
+    $("em-tpl-name").value = t.name || "";
+    $("em-tpl-subject").value = t.subject || "";
+    $("em-tpl-desc").value = t.description || "";
+    $("em-tpl-html").value = t.html_body || "";
+  } catch (e) {
+    banner($("email-catalog-banner"), "live", e.message);
+  }
+}
+
+async function refreshEmailCatalog() {
+  const data = await api("/api/emails");
+  state.emailCatalog = data.catalog || [];
+  renderEmailCatalogTable();
+  document.querySelectorAll(".phase-block.phase-email").forEach((block) => {
+    block.querySelectorAll(".em-tpl").forEach((sel) => {
+      const cur = sel.value;
+      sel.innerHTML = emailTemplateOptions(cur);
+    });
+  });
+}
+
 async function initScenarioTab() {
   try {
-    const [events, mitre] = await Promise.all([api("/api/events"), api("/api/mitre/tactics")]);
+    const [events, mitre, emails] = await Promise.all([
+      api("/api/events"),
+      api("/api/mitre/tactics"),
+      api("/api/emails"),
+    ]);
     applyEventCatalog(events);
+    state.emailCatalog = emails.catalog || [];
+    renderEmailCatalogTable();
     mitreTactics = mitre.tactics || [];
     fillMitreAddSelect();
     if (!state.configLoaded) await loadConfig();
@@ -865,11 +1043,50 @@ $("btn-sc-reload").addEventListener("click", async () => {
   }
 });
 $("btn-add-phase-mitre").addEventListener("click", () => {
-  const tid = $("sc-add-tactic").value || (mitreTactics[0] && mitreTactics[0].id);
+  const tid = $("sc-add-tactic").value;
   if (!tid) return;
-  scPhases.push(phaseFromTactic(tid, true));
+  scPhases.push(phaseFromTactic(tid, false));
   renderAllPhases();
-  banner($("sc-banner"), "ok", `Fase añadida: ${phaseSlugFromTacticId(tid)}`);
+  banner($("sc-banner"), "ok", `Fase MITRE añadida: ${phaseSlugFromTacticId(tid)}`);
+});
+
+$("btn-add-phase-email").addEventListener("click", () => {
+  scPhases.push(phaseFromEmail(`correo_${scPhases.length + 1}`));
+  renderAllPhases();
+  banner($("sc-banner"), "ok", "Fase correo añadida");
+});
+
+$("btn-em-save").addEventListener("click", async () => {
+  const payload = {
+    id: $("em-tpl-id").value.trim(),
+    name: $("em-tpl-name").value.trim(),
+    subject: $("em-tpl-subject").value.trim(),
+    description: $("em-tpl-desc").value.trim(),
+    html_body: $("em-tpl-html").value,
+  };
+  if (!payload.id) {
+    banner($("email-catalog-banner"), "dry", "ID de plantilla requerido");
+    return;
+  }
+  try {
+    await api("/api/emails", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    await refreshEmailCatalog();
+    banner($("email-catalog-banner"), "ok", `Plantilla guardada: ${payload.id}`);
+  } catch (e) {
+    banner($("email-catalog-banner"), "live", e.message);
+  }
+});
+
+$("btn-em-new").addEventListener("click", () => {
+  $("em-tpl-id").value = "";
+  $("em-tpl-name").value = "";
+  $("em-tpl-subject").value = "";
+  $("em-tpl-desc").value = "";
+  $("em-tpl-html").value = "<!DOCTYPE html>\n<html><body><p>Hola {{user}},</p></body></html>";
 });
 
 $("btn-save-scenario").addEventListener("click", async () => {

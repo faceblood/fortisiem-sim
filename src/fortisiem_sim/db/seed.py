@@ -11,6 +11,7 @@ from ..loaders import (
 )
 from .assets_repo import seed_assets_from_yaml
 from .connection import get_connection, init_schema
+from .email_repo import seed_email_templates
 from .events_repo import upsert_event_raw, upsert_template
 from .scenarios_repo import seed_scenarios_from_yaml
 
@@ -58,6 +59,7 @@ def seed_database(conn: sqlite3.Connection | None = None) -> None:
             ),
         )
         seed_assets_from_yaml(conn)
+        seed_email_templates(conn)
         seed_scenarios_from_yaml(conn)
         conn.commit()
     finally:

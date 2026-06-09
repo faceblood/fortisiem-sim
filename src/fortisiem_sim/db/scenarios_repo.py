@@ -10,8 +10,25 @@ import yaml
 from ..assets import assets_to_actors, scenario_to_yaml
 from ..loaders import _parse_actors, _parse_event, _parse_phase, load_scenario, scenarios_dir
 from ..mitre import guess_tactic_from_phase, tactic_by_id
-from ..models import Scenario, ScenarioPhase
+from ..models import Scenario, ScenarioEmail, ScenarioPhase
 from .connection import get_connection
+
+
+def _parse_email(raw: dict[str, Any]) -> ScenarioEmail:
+    return ScenarioEmail(
+        template_id=str(raw["template_id"]),
+        to_address=str(raw.get("to_address", raw.get("to", ""))),
+        cc=str(raw.get("cc", "")),
+        actor=str(raw.get("actor", "")),
+        overrides={str(k): str(v) for k, v in (raw.get("overrides") or {}).items()},
+    )
+
+
+def _phase_type(row: sqlite3.Row) -> str:
+    try:
+        return str(row["phase_type"] or "mitre")
+    except (KeyError, IndexError):
+        return "mitre"
 
 
 def _slugify(name: str) -> str:
@@ -74,36 +91,62 @@ def load_scenario_model(scenario_id: str, assets: dict[str, Any] | None = None) 
             """,
             (scenario_id,),
         ):
-            events = [
-                _parse_event(
-                    {
-                        "id": ev["event_id"],
-                        "count": ev["count"],
-                        "actor": ev["actor"],
-                        "overrides": json.loads(ev["overrides_json"] or "{}"),
-                    }
-                )
-                for ev in conn.execute(
-                    """
-                    SELECT * FROM scenario_phase_events
-                    WHERE phase_id = ?
-                    ORDER BY sort_order, id
-                    """,
-                    (ph_row["id"],),
-                )
-            ]
+            ptype = _phase_type(ph_row)
+            events = []
+            emails: list[ScenarioEmail] = []
+            if ptype == "email":
+                emails = [
+                    _parse_email({
+                        "template_id": em["template_id"],
+                        "to_address": em["to_address"],
+                        "cc": em["cc"],
+                        "actor": em["actor"],
+                        "overrides": json.loads(em["overrides_json"] or "{}"),
+                    })
+                    for em in conn.execute(
+                        """
+                        SELECT * FROM scenario_phase_emails
+                        WHERE phase_id = ?
+                        ORDER BY sort_order, id
+                        """,
+                        (ph_row["id"],),
+                    )
+                ]
+            else:
+                events = [
+                    _parse_event(
+                        {
+                            "id": ev["event_id"],
+                            "count": ev["count"],
+                            "actor": ev["actor"],
+                            "overrides": json.loads(ev["overrides_json"] or "{}"),
+                        }
+                    )
+                    for ev in conn.execute(
+                        """
+                        SELECT * FROM scenario_phase_events
+                        WHERE phase_id = ?
+                        ORDER BY sort_order, id
+                        """,
+                        (ph_row["id"],),
+                    )
+                ]
             phases.append(
                 ScenarioPhase(
                     name=ph_row["slug"],
                     description=ph_row["description"],
+                    phase_type=ptype,
                     events=events,
+                    emails=emails,
+                    mitre_tactic=ph_row["mitre_tactic"] or "",
+                    mitre_techniques=json.loads(ph_row["mitre_techniques_json"] or "[]"),
                 )
             )
         if row["use_config_actors"]:
             if assets is None:
-                from .assets_repo import load_assets_dict
+                from .assets_repo import load_assets_dict_with_smtp
 
-                assets = load_assets_dict(conn)
+                assets = load_assets_dict_with_smtp(conn)
             actors = _parse_actors(assets_to_actors(assets))
         else:
             actors = _parse_actors(json.loads(row["actors_json"] or "{}"))
@@ -135,8 +178,33 @@ def builder_payload(scenario_id: str, assets: dict[str, Any] | None = None) -> d
             """,
             (scenario_id,),
         ):
+            ptype = _phase_type(ph_row)
             mitre_tactic = ph_row["mitre_tactic"] or ""
             mitre_techniques = json.loads(ph_row["mitre_techniques_json"] or "[]")
+            if ptype == "email":
+                emails = [
+                    {
+                        "template_id": em["template_id"],
+                        "to_address": em["to_address"],
+                        "cc": em["cc"] or "",
+                        "actor": em["actor"] or "",
+                    }
+                    for em in conn.execute(
+                        """
+                        SELECT * FROM scenario_phase_emails
+                        WHERE phase_id = ?
+                        ORDER BY sort_order, id
+                        """,
+                        (ph_row["id"],),
+                    )
+                ]
+                phases_out.append({
+                    "phase_type": "email",
+                    "name": ph_row["slug"],
+                    "description": ph_row["description"],
+                    "emails": emails,
+                })
+                continue
             if not mitre_tactic:
                 mitre_tactic = guess_tactic_from_phase(ph_row["slug"], ph_row["description"])
             tactic = tactic_by_id(mitre_tactic) if mitre_tactic else None
@@ -157,6 +225,7 @@ def builder_payload(scenario_id: str, assets: dict[str, Any] | None = None) -> d
                 )
             ]
             phases_out.append({
+                "phase_type": "mitre",
                 "name": phase_name,
                 "description": ph_row["description"],
                 "mitre_tactic": mitre_tactic,
@@ -225,14 +294,46 @@ def save_from_builder(
         )
         conn.execute("DELETE FROM scenario_phases WHERE scenario_id = ?", (scenario_id,))
         for pi, ph in enumerate(scenario.get("phases", [])):
+            ptype = str(ph.get("phase_type", "mitre")).strip().lower()
+            if ptype == "email":
+                slug = str(ph.get("name", f"email_{pi}")).strip().replace(" ", "_").lower()
+                cur = conn.execute(
+                    """
+                    INSERT INTO scenario_phases (
+                        scenario_id, slug, description, phase_type,
+                        mitre_tactic, mitre_techniques_json, sort_order
+                    ) VALUES (?, ?, ?, 'email', '', '[]', ?)
+                    """,
+                    (scenario_id, slug, ph.get("description", ""), pi),
+                )
+                phase_id = cur.lastrowid
+                for ei, em in enumerate(ph.get("emails", [])):
+                    conn.execute(
+                        """
+                        INSERT INTO scenario_phase_emails (
+                            phase_id, template_id, to_address, cc, actor,
+                            overrides_json, sort_order
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            phase_id,
+                            em["template_id"],
+                            str(em.get("to_address", em.get("to", ""))),
+                            str(em.get("cc", "")),
+                            str(em.get("actor", "")),
+                            json.dumps(em.get("overrides") or {}),
+                            ei,
+                        ),
+                    )
+                continue
             tactic = tactic_by_id(str(ph.get("mitre_tactic", ""))) if ph.get("mitre_tactic") else None
             slug = tactic["slug"] if tactic else str(ph.get("name", f"phase_{pi}")).strip().replace(" ", "_")
             cur = conn.execute(
                 """
                 INSERT INTO scenario_phases (
-                    scenario_id, slug, description, mitre_tactic,
+                    scenario_id, slug, description, phase_type, mitre_tactic,
                     mitre_techniques_json, sort_order
-                ) VALUES (?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, 'mitre', ?, ?, ?)
                 """,
                 (
                     scenario_id,
