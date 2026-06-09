@@ -17,8 +17,8 @@ fortisiem-sim --validate --config scenarios/ransomware-tabletop.yml
 
 echo "[4/4] Listo."
 echo ""
-echo "  source .venv/bin/activate"
-echo "  fortisiem-sim --config scenarios/ransomware-tabletop.yml --phase recon_and_access"
-echo ""
-echo "  Envío real (sudo + ruta completa):"
-echo "  sudo .venv/bin/fortisiem-sim --config scenarios/ransomware-tabletop.yml --phase recon_and_access --send --no-spoof"
+echo "  Forma simple (wrapper, sin activar venv):"
+echo "    ./fsim --list-scenarios"
+echo "    ./fsim ransomware                     # dry-run"
+echo "    ./fsim ransomware recon_and_access    # una fase"
+echo "    ./fsim ransomware --send --no-spoof   # envío real (pide sudo)"

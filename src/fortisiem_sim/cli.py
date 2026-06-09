@@ -6,7 +6,13 @@ import argparse
 import sys
 from pathlib import Path
 
-from .config import default_lab_path, load_lab_profile, merge_lab_into_options
+from .config import (
+    default_lab_path,
+    list_scenarios,
+    load_lab_profile,
+    merge_lab_into_options,
+    resolve_scenario,
+)
 from .engine import (
     list_events_table,
     probe,
@@ -34,9 +40,16 @@ def build_parser() -> argparse.ArgumentParser:
             "  fortisiem-sim --event login_failed --count 5 --seed 42 --output-format jsonl\n"
         ),
     )
-    p.add_argument("--config", type=Path, help="Escenario YAML/JSON")
+    p.add_argument(
+        "scenario",
+        nargs="?",
+        default="",
+        help="Escenario: nombre corto (ej. 'ransomware') o ruta a YAML/JSON",
+    )
+    p.add_argument("--config", type=Path, help="(alias de scenario) ruta a YAML/JSON")
     p.add_argument("--lab", type=Path, help=f"Perfil lab (default: {default_lab_path()})")
     p.add_argument("--templates", type=Path, help="Biblioteca events.yaml")
+    p.add_argument("--list-scenarios", action="store_true", help="Listar escenarios disponibles")
     p.add_argument("--list-events", action="store_true", help="Tabla de eventos")
     p.add_argument("--list-formats", action="store_true", help="Formatos soportados")
     p.add_argument("--show-event", metavar="ID", help="Detalle de un evento")
@@ -99,6 +112,13 @@ def _build_options(args: argparse.Namespace) -> SendOptions:
     return opts
 
 
+def _resolve_config(args: argparse.Namespace) -> Path | None:
+    raw = args.scenario or (str(args.config) if args.config else "")
+    if not raw:
+        return None
+    return resolve_scenario(raw)
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     options = _build_options(args)
@@ -108,6 +128,16 @@ def main(argv: list[str] | None = None) -> int:
         print(f"ERROR: plantillas no encontradas: {templates_path}", file=sys.stderr)
         return 1
     templates = load_templates(templates_path)
+
+    if args.list_scenarios:
+        scenarios = list_scenarios()
+        if not scenarios:
+            print("No hay escenarios en scenarios/")
+            return 0
+        print("Escenarios disponibles (usa el nombre corto):")
+        for path in scenarios:
+            print(f"  {path.stem}")
+        return 0
 
     if args.list_formats:
         for fmt, desc in sorted(SUPPORTED_FORMATS.items()):
@@ -121,28 +151,34 @@ def main(argv: list[str] | None = None) -> int:
     if args.show_event:
         return show_event_detail(templates, args.show_event)
 
+    try:
+        config_path = _resolve_config(args)
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
     if args.list_phases:
-        if not args.config:
-            print("ERROR: --list-phases requiere --config", file=sys.stderr)
+        if not config_path:
+            print("ERROR: --list-phases requiere un escenario", file=sys.stderr)
             return 1
-        scenario = load_scenario(args.config)
-        print(f"Fases en {args.config}:")
+        scenario = load_scenario(config_path)
+        print(f"Fases en {config_path.stem}:")
         for phase in scenario.phases:
             n = sum(e.count for e in phase.events)
             print(f"  {phase.name:<28} {len(phase.events)} tipos, ~{n} eventos  # {phase.description}")
         return 0
 
     if args.validate:
-        if not args.config:
-            print("ERROR: --validate requiere --config", file=sys.stderr)
+        if not config_path:
+            print("ERROR: --validate requiere un escenario", file=sys.stderr)
             return 1
-        errors = validate_all(args.config, templates_path)
+        errors = validate_all(config_path, templates_path)
         if errors:
             print("VALIDACIÓN FALLIDA:")
             for err in errors:
                 print(f"  - {err}")
             return 1
-        print(f"OK: {args.config} + {templates_path}")
+        print(f"OK: {config_path.stem} + {templates_path.name}")
         return 0
 
     if args.probe:
@@ -152,15 +188,19 @@ def main(argv: list[str] | None = None) -> int:
         print_summary(summary, dry_run=options.dry_run)
         return 0
 
-    if args.config:
-        scenario = load_scenario(args.config)
+    if config_path:
+        scenario = load_scenario(config_path)
         if scenario.org_id == 1 and options.org_id != 1:
             scenario.org_id = options.org_id
     elif args.event:
         scenario = _minimal_scenario(options.org_id)
     else:
         build_parser().print_help()
-        print("\nERROR: indica --config <escenario.yml> o --event <id>", file=sys.stderr)
+        print(
+            "\nERROR: indica un escenario (ej. 'fortisiem-sim ransomware') o --event <id>.\n"
+            "       Lista: fortisiem-sim --list-scenarios",
+            file=sys.stderr,
+        )
         return 1
 
     if args.dry_run and not args.quiet:
@@ -191,7 +231,7 @@ def main(argv: list[str] | None = None) -> int:
     if summary.total == 0:
         print("AVISO: 0 eventos procesados.", file=sys.stderr)
         if args.phase:
-            print(f"  ¿Fase correcta? Prueba: fortisiem-sim --list-phases --config {args.config}", file=sys.stderr)
+            print(f"  ¿Fase correcta? Prueba: fortisiem-sim --list-phases {config_path.stem}", file=sys.stderr)
         if args.event:
             print("  ¿Event ID correcto? Prueba: fortisiem-sim --list-events", file=sys.stderr)
         return 1

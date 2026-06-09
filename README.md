@@ -42,32 +42,39 @@ scapy>=2.5.0
 PyYAML>=6.0
 ```
 
-## Uso rápido
+## Uso rápido (simple)
+
+Hay dos formas. La **más simple** es el wrapper `./fsim` (no necesitas activar el venv ni escribir `sudo`/rutas):
 
 ```bash
-# Validar antes de ejecutar
-fortisiem-sim --validate --config scenarios/tabletop.yml
+./fsim --list-scenarios                 # qué escenarios hay
+./fsim ransomware                       # dry-run completo (solo pantalla)
+./fsim ransomware recon_and_access      # dry-run de una fase
+./fsim ransomware --send                # envío real (pide sudo solo)
+./fsim ransomware recon_and_access --send --no-spoof
+```
 
-# Dry-run (default) — escenario completo
-fortisiem-sim --config scenarios/tabletop.yml
+Equivalente con el comando instalado (requiere `source .venv/bin/activate`):
 
-# Solo fase con actores asignados
-fortisiem-sim --config scenarios/tabletop.yml --phase initial_access
+```bash
+# Nombre corto en lugar de ruta completa
+fortisiem-sim --list-scenarios
+fortisiem-sim ransomware                       # = scenarios/ransomware-tabletop.yml
+fortisiem-sim ransomware --phase execution
+fortisiem-sim --validate ransomware
+fortisiem-sim --list-phases ransomware
 
-# Reproducible + JSONL
-fortisiem-sim --config scenarios/tabletop.yml --phase execution --seed 42 --output-format jsonl -q
+# Envío real
+sudo .venv/bin/fortisiem-sim ransomware --phase recon_and_access --send --no-spoof
+```
 
-# Detalle de plantilla
-fortisiem-sim --show-event suspicious_powershell_simulated
+Antes (verboso) vs ahora:
 
-# Envío real (sudo, lab controlado)
-sudo fortisiem-sim --config scenarios/tabletop.yml --phase initial_access --send
-
-# Sin spoofing (red que bloquea IP falsificada)
-sudo fortisiem-sim --config scenarios/tabletop.yml --send --no-spoof
-
-# Probe (1 evento de prueba)
-sudo fortisiem-sim --probe --send --target 10.255.9.3
+```bash
+# ANTES
+sudo .venv/bin/fortisiem-sim --config scenarios/ransomware-tabletop.yml --phase recon_and_access --send --no-spoof
+# AHORA
+./fsim ransomware recon_and_access --send --no-spoof
 ```
 
 ## Estructura

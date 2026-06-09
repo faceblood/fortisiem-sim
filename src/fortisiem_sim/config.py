@@ -20,6 +20,37 @@ def default_templates_path() -> Path:
     return package_root() / "templates" / "events.yaml"
 
 
+def scenarios_dir() -> Path:
+    return package_root() / "scenarios"
+
+
+def list_scenarios() -> list[Path]:
+    base = scenarios_dir()
+    if not base.exists():
+        return []
+    return sorted(p for p in base.glob("*.y*ml")) + sorted(base.glob("*.json"))
+
+
+def resolve_scenario(value: str) -> Path:
+    """Acepta ruta completa o nombre corto (p.ej. 'ransomware' -> ransomware-tabletop.yml)."""
+    candidate = Path(value)
+    if candidate.exists():
+        return candidate
+    available = list_scenarios()
+    stem = value.lower().removesuffix(".yml").removesuffix(".yaml").removesuffix(".json")
+    exact = [p for p in available if p.stem.lower() == stem]
+    if exact:
+        return exact[0]
+    partial = [p for p in available if stem in p.stem.lower()]
+    if len(partial) == 1:
+        return partial[0]
+    if len(partial) > 1:
+        names = ", ".join(p.stem for p in partial)
+        raise ValueError(f"'{value}' es ambiguo. Coincidencias: {names}")
+    names = ", ".join(p.stem for p in available) or "(ninguno)"
+    raise ValueError(f"Escenario '{value}' no encontrado. Disponibles: {names}")
+
+
 def load_lab_profile(path: Path | None = None) -> LabProfile:
     lab_file = path or default_lab_path()
     if not lab_file.exists():

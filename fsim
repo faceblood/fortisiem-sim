@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Wrapper simple: usa el binario del venv sin tener que activarlo ni escribir rutas.
+# Uso:
+#   ./fsim ransomware                       # dry-run (solo pantalla)
+#   ./fsim ransomware recon_and_access      # dry-run de una fase
+#   ./fsim ransomware --send                # envío real (pide sudo si hace falta)
+#   ./fsim --list-scenarios
+set -euo pipefail
+HERE="$(cd "$(dirname "$0")" && pwd)"
+BIN="$HERE/.venv/bin/fortisiem-sim"
+
+if [[ ! -x "$BIN" ]]; then
+  echo "[fsim] No encuentro el venv. Ejecuta primero: ./install.sh" >&2
+  exit 1
+fi
+
+# Si el segundo argumento no empieza por '-', trátalo como fase (atajo).
+ARGS=()
+if [[ $# -ge 1 && "${1:0:1}" != "-" ]]; then
+  ARGS+=("$1"); shift
+  if [[ $# -ge 1 && "${1:0:1}" != "-" ]]; then
+    ARGS+=("--phase" "$1"); shift
+  fi
+fi
+ARGS+=("$@")
+
+# --send necesita root: re-ejecuta con sudo automáticamente.
+NEED_SUDO=false
+for a in "${ARGS[@]:-}"; do
+  [[ "$a" == "--send" ]] && NEED_SUDO=true
+done
+
+if $NEED_SUDO && [[ "$(id -u)" -ne 0 ]]; then
+  exec sudo "$BIN" "${ARGS[@]}"
+fi
+exec "$BIN" "${ARGS[@]}"
