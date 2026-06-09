@@ -77,9 +77,15 @@ sudo .venv/bin/fortisiem-sim --config scenarios/ransomware-tabletop.yml --phase 
 ./fsim ransomware recon_and_access --send --no-spoof
 ```
 
-## Frontend web (instanciar fases)
+## Frontend web (Ejecutar · Config · Escenario)
 
-UI ligera (Flask) para ver escenarios/fases y lanzarlas desde el navegador.
+UI Flask con tres pestañas:
+
+| Pestaña | Función |
+|---------|---------|
+| **Ejecutar** | Instanciar fases con SSE en vivo o batch |
+| **Config** | AD falso (dominio, usuarios), firewalls, hosts Windows/Linux, pools IP → `config/assets.yaml` |
+| **Escenario** | Constructor gráfico de fases/eventos; guarda YAML en `scenarios/` |
 
 ```bash
 pip install flask          # o: pip install -e ".[web]"
@@ -87,11 +93,9 @@ fortisiem-sim --web        # http://127.0.0.1:8800
 # ./fsim --web             # equivalente con el wrapper
 ```
 
-- Lista escenarios y fases con su nº de eventos y actores.
-- **Streaming SSE (por defecto)**: eventos uno a uno con **delays reales** del escenario (`delay`, `jitter`, `delay_before`).
-- Barra de progreso y contador en vivo; botón **Detener**.
-- Modo batch (desmarca SSE): instantáneo, sin esperas.
-- Casillas **«Enviar de verdad»** (`--send`, requiere `sudo`) y **«Sin spoofing»** (`--no-spoof`).
+- **Ejecutar**: streaming SSE (delays reales), barra de progreso, `--send` / `--no-spoof`.
+- **Config**: listas editables precargadas desde el inventario lab (usuarios AD, FGT, ws-finance-01, scada-gw-01, etc.).
+- **Escenario**: elige plantillas de evento, actores desde Config, delays; opción «Usar actores desde Config».
 
 Endpoints API:
 
@@ -100,7 +104,11 @@ Endpoints API:
 | GET | `/api/run/stream?scenario=...&phase=...` | **SSE** — eventos en vivo |
 | POST | `/api/run` | Batch instantáneo |
 | GET | `/api/scenarios` | Lista escenarios |
-| GET | `/api/scenarios/<name>` | Fases y eventos |
+| GET | `/api/scenarios/<name>` | Fases y eventos (Ejecutar) |
+| GET | `/api/scenarios/<name>/builder` | Escenario completo (builder) |
+| POST | `/api/scenarios/builder` | Guardar escenario YAML |
+| GET/PUT | `/api/config` | Leer/guardar `config/assets.yaml` |
+| GET | `/api/events` | Catálogo de plantillas |
 
 Eventos SSE: `start` → `phase` → `event` (×N) → `done` | `error`.
 

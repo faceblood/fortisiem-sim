@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FortiSIEM Sim</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <h1>FortiSIEM Sim</h1>
+  <span class="tag">lab · org 1 · 10.255.9.3:514</span>
+  <nav class="tabs">
+    <button type="button" data-tab="run" class="active">Ejecutar</button>
+    <button type="button" data-tab="config">Config</button>
+    <button type="button" data-tab="scenario">Escenario</button>
+  </nav>
+</header>
+
+<!-- ========== EJECUTAR ========== -->
+<section id="panel-run" class="panel active">
+  <div class="grid2">
+    <div>
+      <div class="card">
+        <h2>Instanciar fase</h2>
+        <label>Escenario</label>
+        <select id="run-scenario"></select>
+        <label>Fase</label>
+        <select id="run-phase"><option value="">(todas)</option></select>
+        <div class="row">
+          <div><label>count</label><input id="run-count" type="number" min="1" placeholder="auto"></div>
+          <div><label>seed</label><input id="run-seed" type="number" placeholder="—"></div>
+        </div>
+        <div class="check"><input type="checkbox" id="run-sse" checked><label for="run-sse">SSE en vivo (delays reales)</label></div>
+        <div class="check"><input type="checkbox" id="run-send"><label for="run-send">Enviar (--send, sudo)</label></div>
+        <div class="check"><input type="checkbox" id="run-nospoof"><label for="run-nospoof">Sin spoofing</label></div>
+        <button type="button" class="btn btn-primary" style="width:100%;margin-top:8px" id="btn-run">Instanciar fase ▶</button>
+        <button type="button" class="btn btn-danger" style="width:100%;margin-top:6px;display:none" id="btn-stop">Detener ■</button>
+      </div>
+    </div>
+    <div>
+      <div id="run-banner"></div>
+      <div class="progress" id="run-progress" style="display:none"><div class="progress-bar" id="run-progress-bar"></div></div>
+      <h3>Salida <span id="run-counter" class="pill">0</span></h3>
+      <div id="run-out" class="out">Elige escenario y pulsa Instanciar.</div>
+    </div>
+  </div>
+</section>
+
+<!-- ========== CONFIG ========== -->
+<section id="panel-config" class="panel">
+  <div id="config-banner"></div>
+  <div class="grid2">
+    <div>
+      <div class="card">
+        <h2>AD falso</h2>
+        <label>Dominio principal</label>
+        <input id="cfg-domain" placeholder="lab.local">
+        <label>Dominios adicionales (uno por línea)</label>
+        <textarea id="cfg-domains" rows="3" placeholder="lab.local&#10;vsphere.local"></textarea>
+        <label>Usuarios AD</label>
+        <div class="row">
+          <input id="cfg-user-new" placeholder="nuevo.usuario">
+          <button type="button" class="btn btn-ghost btn-sm" id="btn-add-user">+ Añadir</button>
+        </div>
+        <div class="chips" id="cfg-users"></div>
+      </div>
+      <div class="card">
+        <h2>Pools IP</h2>
+        <label>src_ips (una por línea)</label>
+        <textarea id="cfg-src-ips" rows="4"></textarea>
+        <label>reporting_ips (una por línea)</label>
+        <textarea id="cfg-reporting-ips" rows="4"></textarea>
+      </div>
+    </div>
+    <div>
+      <div class="card">
+        <h2>Firewalls (FortiGate)</h2>
+        <table class="list-table"><thead><tr><th>Nombre</th><th>Serial</th><th>src_ip</th><th>reporting</th><th></th></tr></thead><tbody id="cfg-firewalls"></tbody></table>
+        <button type="button" class="btn btn-ghost btn-sm" id="btn-add-fw">+ Firewall</button>
+      </div>
+      <div class="card">
+        <h2>Windows</h2>
+        <table class="list-table"><thead><tr><th>Hostname</th><th>Usuario</th><th>src_ip</th><th>reporting</th><th></th></tr></thead><tbody id="cfg-windows"></tbody></table>
+        <button type="button" class="btn btn-ghost btn-sm" id="btn-add-win">+ Windows</button>
+      </div>
+      <div class="card">
+        <h2>Linux</h2>
+        <table class="list-table"><thead><tr><th>Hostname</th><th>Usuario</th><th>src_ip</th><th>reporting</th><th></th></tr></thead><tbody id="cfg-linux"></tbody></table>
+        <button type="button" class="btn btn-ghost btn-sm" id="btn-add-linux">+ Linux</button>
+      </div>
+      <button type="button" class="btn btn-success" id="btn-save-config">Guardar Config</button>
+    </div>
+  </div>
+</section>
+
+<!-- ========== ESCENARIO ========== -->
+<section id="panel-scenario" class="panel">
+  <div id="sc-banner"></div>
+  <div class="card">
+    <div class="row">
+      <div><label>Cargar escenario</label><select id="sc-load"></select></div>
+      <div><button type="button" class="btn btn-ghost" id="btn-sc-load">Cargar</button></div>
+      <div><button type="button" class="btn btn-ghost" id="btn-sc-new">Nuevo</button></div>
+    </div>
+  </div>
+  <div class="card">
+    <h2>Metadatos</h2>
+    <div class="row">
+      <div><label>Nombre (archivo)</label><input id="sc-name" placeholder="mi-ejercicio"></div>
+      <div><label>org_id</label><input id="sc-org" type="number" value="1"></div>
+      <div><label>timeline_minutes</label><input id="sc-timeline" type="number" value="0"></div>
+    </div>
+    <label>Descripción</label>
+    <textarea id="sc-desc" rows="2"></textarea>
+    <div class="check"><input type="checkbox" id="sc-use-config" checked><label for="sc-use-config">Usar actores desde Config (AD + hosts)</label></div>
+  </div>
+  <div id="sc-phases"></div>
+  <button type="button" class="btn btn-ghost" id="btn-add-phase">+ Añadir fase</button>
+  <div style="margin-top:16px">
+    <button type="button" class="btn btn-success" id="btn-save-scenario">Guardar escenario YAML</button>
+  </div>
+</section>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

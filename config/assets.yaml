@@ -1,0 +1,75 @@
+# Inventario lab — AD falso, firewalls y hosts (editable desde GUI → Config)
+ad:
+  primary_domain: lab.local
+  domains:
+    - lab.local
+    - vsphere.local
+  users:
+    - jgarcia
+    - svc_finance
+    - admin.it
+    - adm_backup
+    - ot.operator
+    - ir.manager
+    - administrator
+    - svc_backup
+
+firewalls:
+  - name: FGT-LAB-01
+    devname: FGT-LAB-01
+    serial: FGT60FTK23000001
+    src_ip: 10.255.9.21
+    reporting_ip: 10.255.9.21
+  - name: FGT-EDGE-01
+    devname: FGT-EDGE-01
+    serial: FGT60FTK23000002
+    src_ip: 192.0.2.10
+    reporting_ip: 192.0.2.10
+
+windows_hosts:
+  - hostname: ws-finance-01
+    user: svc_finance
+    src_ip: 10.10.20.45
+    reporting_ip: 10.255.9.21
+  - hostname: ws-it-02
+    user: admin.it
+    src_ip: 10.10.10.10
+    reporting_ip: 10.255.9.22
+  - hostname: ws-remote-vpn
+    user: jgarcia
+    src_ip: 198.51.100.88
+    reporting_ip: 192.0.2.55
+  - hostname: dc-lab-01
+    user: adm_backup
+    src_ip: 10.10.10.5
+    reporting_ip: 10.255.9.25
+  - hostname: ws-remote-01
+    user: jgarcia
+    src_ip: 198.51.100.77
+    reporting_ip: 192.0.2.10
+
+linux_hosts:
+  - hostname: scada-gw-01
+    user: ot.operator
+    src_ip: 10.10.30.8
+    reporting_ip: 10.255.9.30
+  - hostname: vcenter-lab
+    user: administrator
+    src_ip: 10.10.40.10
+    reporting_ip: 10.255.9.40
+  - hostname: soc-console
+    user: ir.manager
+    src_ip: 10.10.50.1
+    reporting_ip: 10.255.9.50
+
+pools:
+  src_ips:
+    - 10.10.10.50
+    - 10.10.20.45
+    - 198.51.100.77
+    - 198.51.100.88
+  reporting_ips:
+    - 10.255.9.21
+    - 10.255.9.22
+    - 192.0.2.10
+    - 192.0.2.55
