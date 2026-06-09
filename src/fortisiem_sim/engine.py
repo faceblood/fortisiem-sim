@@ -5,6 +5,7 @@ import random
 import time
 from dataclasses import asdict
 from pathlib import Path
+from typing import Any, Iterator
 
 from .loaders import load_lab_profile, merge_lab_into_options
 from .models import EmittedEvent, EventTemplate, RunSummary, Scenario, ScenarioEvent, SendOptions
@@ -151,6 +152,75 @@ def _count_timeline_events(scenario: Scenario, phase_filter: str) -> int:
     )
 
 
+def iter_scenario_stream(
+    scenario: Scenario,
+    templates: dict[str, EventTemplate],
+    options: SendOptions,
+    summary: RunSummary,
+    *,
+    phase_filter: str = "",
+    event_filter: str = "",
+    no_delay: bool = False,
+    out_fp=None,
+) -> Iterator[tuple[str, Any]]:
+    """Generador: ('phase', dict) al entrar en fase, ('event', EmittedEvent) por log."""
+    lab = load_lab_profile(Path(options.lab_path) if options.lab_path else None)
+    merge_lab_into_options(options, lab)
+    if options.seed is not None:
+        random.seed(options.seed)
+
+    seq = 0
+    timeline_total = _count_timeline_events(scenario, phase_filter) if scenario.timeline_minutes else 0
+
+    if event_filter:
+        tmpl = templates.get(event_filter)
+        if not tmpl:
+            raise KeyError(f"Evento desconocido: {event_filter}")
+        count = max(1, options.count or 1)
+        for i in range(count):
+            yield (
+                "event",
+                emit_one(
+                    scenario, tmpl, options,
+                    phase_name="", actor_name=scenario.actors.default_profile, overrides=None,
+                    sequence_index=seq, timeline_total=max(count, timeline_total),
+                    out_fp=out_fp, summary=summary,
+                ),
+            )
+            seq += 1
+            if not no_delay and i < count - 1:
+                _sleep(options.delay or lab.default_delay, options.jitter or lab.default_jitter)
+        return
+
+    for phase in scenario.phases:
+        if phase_filter and phase.name != phase_filter:
+            continue
+        yield ("phase", {"name": phase.name, "description": phase.description})
+        if not no_delay and phase.delay_before > 0:
+            time.sleep(phase.delay_before)
+        for event in phase.events:
+            tmpl = templates.get(event.id)
+            if not tmpl:
+                raise KeyError(f"Plantilla no encontrada: {event.id}")
+            count = max(1, options.count if options.count is not None else event.count)
+            delay = options.delay or (event.delay if event.delay is not None else lab.default_delay)
+            jitter = options.jitter or (event.jitter if event.jitter is not None else lab.default_jitter)
+            actor = event.actor or scenario.actors.default_profile
+            for i in range(count):
+                yield (
+                    "event",
+                    emit_one(
+                        scenario, tmpl, options,
+                        phase_name=phase.name, actor_name=actor, overrides=event.overrides,
+                        sequence_index=seq, timeline_total=max(timeline_total, 1),
+                        out_fp=out_fp, summary=summary,
+                    ),
+                )
+                seq += 1
+                if not no_delay and i < count - 1:
+                    _sleep(delay, jitter)
+
+
 def run_scenario(
     scenario: Scenario,
     templates: dict[str, EventTemplate],
@@ -161,61 +231,17 @@ def run_scenario(
     no_delay: bool = False,
     collect: list[EmittedEvent] | None = None,
 ) -> RunSummary:
-    """Ejecuta el escenario. Con no_delay=True omite esperas (web). Con collect acumula eventos."""
-    lab = load_lab_profile(Path(options.lab_path) if options.lab_path else None)
-    merge_lab_into_options(options, lab)
-    if options.seed is not None:
-        random.seed(options.seed)
-
+    """Ejecuta el escenario. Con no_delay=True omite esperas. Con collect acumula eventos."""
     summary = RunSummary()
     out_fp = open(options.output_file, "a", encoding="utf-8") if options.output_file else None
-    seq = 0
-    timeline_total = _count_timeline_events(scenario, phase_filter) if scenario.timeline_minutes else 0
-
-    def _emit(tmpl, *, phase_name, actor, overrides, total):
-        emitted = emit_one(
-            scenario, tmpl, options,
-            phase_name=phase_name, actor_name=actor, overrides=overrides,
-            sequence_index=seq, timeline_total=total, out_fp=out_fp, summary=summary,
-        )
-        if collect is not None:
-            collect.append(emitted)
-
     try:
-        # Evento suelto (--event)
-        if event_filter:
-            tmpl = templates.get(event_filter)
-            if not tmpl:
-                raise KeyError(f"Evento desconocido: {event_filter}")
-            count = max(1, options.count or 1)
-            for i in range(count):
-                _emit(tmpl, phase_name="", actor=scenario.actors.default_profile,
-                      overrides=None, total=max(count, timeline_total))
-                seq += 1
-                if not no_delay and i < count - 1:
-                    _sleep(options.delay or lab.default_delay, options.jitter or lab.default_jitter)
-            return summary
-
-        # Escenario por fases
-        for phase in scenario.phases:
-            if phase_filter and phase.name != phase_filter:
-                continue
-            if not no_delay and phase.delay_before > 0:
-                time.sleep(phase.delay_before)
-            for event in phase.events:
-                tmpl = templates.get(event.id)
-                if not tmpl:
-                    raise KeyError(f"Plantilla no encontrada: {event.id}")
-                count = max(1, options.count if options.count is not None else event.count)
-                delay = options.delay or (event.delay if event.delay is not None else lab.default_delay)
-                jitter = options.jitter or (event.jitter if event.jitter is not None else lab.default_jitter)
-                actor = event.actor or scenario.actors.default_profile
-                for i in range(count):
-                    _emit(tmpl, phase_name=phase.name, actor=actor,
-                          overrides=event.overrides, total=max(timeline_total, 1))
-                    seq += 1
-                    if not no_delay and i < count - 1:
-                        _sleep(delay, jitter)
+        for kind, payload in iter_scenario_stream(
+            scenario, templates, options, summary,
+            phase_filter=phase_filter, event_filter=event_filter,
+            no_delay=no_delay, out_fp=out_fp,
+        ):
+            if kind == "event" and collect is not None:
+                collect.append(payload)
         return summary
     finally:
         if out_fp:

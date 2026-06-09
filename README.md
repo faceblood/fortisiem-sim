@@ -88,11 +88,21 @@ fortisiem-sim --web        # http://127.0.0.1:8800
 ```
 
 - Lista escenarios y fases con su nº de eventos y actores.
-- Botón **«Instanciar fase»**: ejecuta en **dry-run** por defecto (sin esperas) y muestra los logs generados.
-- Casillas **«Enviar de verdad»** (`--send`, requiere lanzar el server con `sudo`) y **«Sin spoofing»** (`--no-spoof`).
-- Overrides de `count` y `seed`.
+- **Streaming SSE (por defecto)**: eventos uno a uno con **delays reales** del escenario (`delay`, `jitter`, `delay_before`).
+- Barra de progreso y contador en vivo; botón **Detener**.
+- Modo batch (desmarca SSE): instantáneo, sin esperas.
+- Casillas **«Enviar de verdad»** (`--send`, requiere `sudo`) y **«Sin spoofing»** (`--no-spoof`).
 
-Endpoints API: `GET /api/scenarios`, `GET /api/scenarios/<name>`, `POST /api/run`.
+Endpoints API:
+
+| Método | Ruta | Función |
+|--------|------|---------|
+| GET | `/api/run/stream?scenario=...&phase=...` | **SSE** — eventos en vivo |
+| POST | `/api/run` | Batch instantáneo |
+| GET | `/api/scenarios` | Lista escenarios |
+| GET | `/api/scenarios/<name>` | Fases y eventos |
+
+Eventos SSE: `start` → `phase` → `event` (×N) → `done` | `error`.
 
 Para envío real desde la web (lab):
 
