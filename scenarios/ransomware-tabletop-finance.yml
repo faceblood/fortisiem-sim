@@ -1,0 +1,198 @@
+name: ransomware-tabletop-finance
+description: >
+  Compromiso simulado de estación finance: acceso VPN externo, PowerShell sospechoso,
+  acceso a credenciales (EDR simulado), staging de archivos, C2 outbound, escalada
+  de privilegios e impacto OT ligero.
+org_id: 1
+timeline_minutes: 60
+metadata:
+  classification: simulated-only
+  created_by: fortisiem-sim-gui
+actors:
+  default_profile: ws_remote_vpn
+  profiles:
+    firewall:
+      user: jgarcia
+      domain: lab.local
+      src_ip: 10.255.9.21
+      reporting_ip: 10.255.9.21
+      hostname: FGT-LAB-01
+    firewall_2:
+      user: jgarcia
+      domain: lab.local
+      src_ip: 192.0.2.10
+      reporting_ip: 192.0.2.10
+      hostname: FGT-EDGE-01
+    ws_finance_01:
+      user: svc_finance
+      domain: lab.local
+      src_ip: 10.10.20.45
+      reporting_ip: 10.255.9.21
+      hostname: ws-finance-01
+    ws_it_02:
+      user: admin.it
+      domain: lab.local
+      src_ip: 10.10.10.10
+      reporting_ip: 10.255.9.22
+      hostname: ws-it-02
+    ws_remote_vpn:
+      user: jgarcia
+      domain: lab.local
+      src_ip: 198.51.100.88
+      reporting_ip: 192.0.2.55
+      hostname: ws-remote-vpn
+    dc_lab_01:
+      user: adm_backup
+      domain: lab.local
+      src_ip: 10.10.10.5
+      reporting_ip: 10.255.9.25
+      hostname: dc-lab-01
+    ws_remote_01:
+      user: jgarcia
+      domain: lab.local
+      src_ip: 198.51.100.77
+      reporting_ip: 192.0.2.10
+      hostname: ws-remote-01
+    linux_scada_gw_01:
+      user: ot.operator
+      domain: lab.local
+      src_ip: 10.10.30.8
+      reporting_ip: 10.255.9.30
+      hostname: scada-gw-01
+    linux_vcenter_lab:
+      user: administrator
+      domain: lab.local
+      src_ip: 10.10.40.10
+      reporting_ip: 10.255.9.40
+      hostname: vcenter-lab
+    linux_soc_console:
+      user: ir.manager
+      domain: lab.local
+      src_ip: 10.10.50.1
+      reporting_ip: 10.255.9.50
+      hostname: soc-console
+  pools:
+    users:
+    - jgarcia
+    - svc_finance
+    - admin.it
+    - adm_backup
+    - ot.operator
+    - ir.manager
+    - administrator
+    - svc_backup
+    domains:
+    - lab.local
+    - vsphere.local
+    hostnames:
+    - ws-finance-01
+    - ws-it-02
+    - ws-remote-vpn
+    - dc-lab-01
+    - ws-remote-01
+    - scada-gw-01
+    - vcenter-lab
+    - soc-console
+    src_ips:
+    - 10.10.10.50
+    - 10.10.20.45
+    - 198.51.100.77
+    - 198.51.100.88
+    reporting_ips:
+    - 10.255.9.21
+    - 10.255.9.22
+    - 192.0.2.10
+    - 192.0.2.55
+phases:
+  recon_and_access:
+    description: 'T1078 — Acceso inicial: fallos de login + VPN desde país externo'
+    delay_before: 0.0
+    events:
+    - id: login_failed
+      count: 12
+      actor: ws_remote_vpn
+      delay: 0.4
+      jitter: 0.25
+    - id: login_success
+      count: 1
+      actor: ws_remote_vpn
+      delay: 1.0
+    - id: vpn_login_foreign_country
+      count: 2
+      actor: ws_remote_vpn
+      delay: 2.0
+  execution:
+    description: T1059 / T1003 — Ejecución y acceso a credenciales simulado
+    delay_before: 3.0
+    events:
+    - id: ssh_login
+      count: 2
+      actor: ws_finance_01
+      delay: 1.0
+    - id: suspicious_powershell_simulated
+      count: 4
+      actor: ws_finance_01
+      delay: 1.5
+      jitter: 0.5
+    - id: shadow_access_simulated
+      count: 2
+      actor: ws_finance_01
+      delay: 2.0
+    - id: credential_access_simulated
+      count: 2
+      actor: ws_finance_01
+      delay: 2.0
+    - id: process_execution
+      count: 3
+      actor: ws_finance_01
+      delay: 0.8
+  staging_and_exfil:
+    description: T1560 / T1048 — Staging y conexiones salientes simuladas
+    delay_before: 5.0
+    events:
+    - id: file_access_sensitive
+      count: 5
+      actor: ws_finance_01
+      delay: 1.0
+    - id: archive_creation
+      count: 2
+      actor: ws_finance_01
+      delay: 2.0
+    - id: outbound_connection
+      count: 35
+      actor: ws_remote_vpn
+      delay: 0.2
+      jitter: 0.1
+    - id: web_upload
+      count: 4
+      actor: ws_remote_vpn
+      delay: 1.0
+  lateral_movement:
+    description: T1021 — Movimiento lateral simulado hacia IT/DC
+    delay_before: 8.0
+    events:
+    - id: lateral_movement_simulated
+      count: 3
+      actor: ws_remote_vpn
+      delay: 3.0
+    - id: backup_access
+      count: 3
+      actor: dc_lab_01
+      delay: 1.5
+    - id: sudo_command
+      count: 2
+      actor: ws_it_02
+      delay: 1.0
+  impact_identity:
+    description: T1098 / T1486 — Escalada, nueva cuenta, impacto simulado
+    delay_before: 10.0
+    events:
+    - id: new_user_created
+      count: 1
+      actor: ws_remote_vpn
+    - id: privilege_change
+      count: 1
+      actor: ws_remote_vpn
+    - id: defacement_simulated
+      count: 1
+      actor: ws_remote_vpn
