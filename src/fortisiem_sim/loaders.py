@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import json
 from pathlib import Path
 from typing import Any
@@ -10,12 +11,103 @@ from .models import (
     ActorPools,
     ActorProfile,
     EventTemplate,
+    LabProfile,
     Scenario,
     ScenarioActors,
     ScenarioEvent,
     ScenarioPhase,
+    SendOptions,
 )
 
+# --------------------------------------------------------------------------- #
+# Rutas del proyecto
+# --------------------------------------------------------------------------- #
+
+def package_root() -> Path:
+    return Path(__file__).resolve().parent.parent.parent
+
+
+def default_lab_path() -> Path:
+    return package_root() / "lab.yaml"
+
+
+def default_templates_path() -> Path:
+    return package_root() / "templates" / "events.yaml"
+
+
+def scenarios_dir() -> Path:
+    return package_root() / "scenarios"
+
+
+def list_scenarios() -> list[Path]:
+    base = scenarios_dir()
+    if not base.exists():
+        return []
+    return sorted(base.glob("*.y*ml")) + sorted(base.glob("*.json"))
+
+
+def resolve_scenario(value: str) -> Path:
+    """Acepta ruta completa o nombre corto (p.ej. 'ransomware' -> ransomware-tabletop.yml)."""
+    candidate = Path(value)
+    if candidate.exists():
+        return candidate
+    available = list_scenarios()
+    stem = value.lower().removesuffix(".yml").removesuffix(".yaml").removesuffix(".json")
+    exact = [p for p in available if p.stem.lower() == stem]
+    if exact:
+        return exact[0]
+    partial = [p for p in available if stem in p.stem.lower()]
+    if len(partial) == 1:
+        return partial[0]
+    if len(partial) > 1:
+        names = ", ".join(p.stem for p in partial)
+        raise ValueError(f"'{value}' es ambiguo. Coincidencias: {names}")
+    names = ", ".join(p.stem for p in available) or "(ninguno)"
+    raise ValueError(f"Escenario '{value}' no encontrado. Disponibles: {names}")
+
+
+def resolve_templates_path(options: SendOptions) -> Path:
+    return Path(options.templates_path) if options.templates_path else default_templates_path()
+
+
+# --------------------------------------------------------------------------- #
+# Perfil de laboratorio (lab.yaml)
+# --------------------------------------------------------------------------- #
+
+def load_lab_profile(path: Path | None = None) -> LabProfile:
+    lab_file = path or default_lab_path()
+    if not lab_file.exists():
+        return LabProfile()
+    data = yaml.safe_load(lab_file.read_text(encoding="utf-8")) or {}
+    fs = data.get("fortisiem") or {}
+    sim = data.get("simulation") or {}
+    return LabProfile(
+        target=str(fs.get("target", "10.255.9.3")),
+        port=int(fs.get("port", 514)),
+        org_id=int(fs.get("org_id", 1)),
+        version=str(fs.get("version", "7.5")),
+        edition=str(fs.get("edition", "enterprise")),
+        marker=str(sim.get("marker", "simulated=true")),
+        default_delay=float(sim.get("default_delay", 0.5)),
+        default_jitter=float(sim.get("default_jitter", 0.2)),
+    )
+
+
+def merge_lab_into_options(options: SendOptions, lab: LabProfile) -> None:
+    """Rellena con valores de lab.yaml solo si el usuario no los cambió por CLI."""
+    if options.target == "10.255.9.3":
+        options.target = lab.target
+    if options.port == 514:
+        options.port = lab.port
+    if options.org_id == 1:
+        options.org_id = lab.org_id
+    if not options.simulation_marker:
+        options.simulation_marker = lab.marker
+
+
+# --------------------------------------------------------------------------- #
+# Carga de plantillas y escenarios
+# --------------------------------------------------------------------------- #
 
 def _load_raw(path: Path) -> dict[str, Any]:
     text = path.read_text(encoding="utf-8")
@@ -57,22 +149,20 @@ def load_templates(path: Path) -> dict[str, EventTemplate]:
     return out
 
 
-def _parse_pools(raw: dict[str, Any] | None) -> ActorPools:
-    raw = raw or {}
-    defaults = ActorPools()
+def _parse_pools(raw: dict[str, Any]) -> ActorPools:
+    d = ActorPools()
     return ActorPools(
-        users=[str(x) for x in raw.get("users", defaults.users)],
-        hostnames=[str(x) for x in raw.get("hostnames", defaults.hostnames)],
-        src_ips=[str(x) for x in raw.get("src_ips", defaults.src_ips)],
-        reporting_ips=[str(x) for x in raw.get("reporting_ips", defaults.reporting_ips)],
-        domains=[str(x) for x in raw.get("domains", defaults.domains)],
+        users=[str(x) for x in raw.get("users", d.users)],
+        hostnames=[str(x) for x in raw.get("hostnames", d.hostnames)],
+        src_ips=[str(x) for x in raw.get("src_ips", d.src_ips)],
+        reporting_ips=[str(x) for x in raw.get("reporting_ips", d.reporting_ips)],
+        domains=[str(x) for x in raw.get("domains", d.domains)],
     )
 
 
 def _parse_profiles(raw: dict[str, Any] | None) -> dict[str, ActorProfile]:
-    raw = raw or {}
     profiles: dict[str, ActorProfile] = {}
-    for name, item in raw.items():
+    for name, item in (raw or {}).items():
         if not isinstance(item, dict):
             continue
         profiles[name] = ActorProfile(
@@ -84,20 +174,16 @@ def _parse_profiles(raw: dict[str, Any] | None) -> dict[str, ActorProfile]:
             hostname=str(item.get("hostname", "ws-lab-01")),
             extra={str(k): str(v) for k, v in (item.get("extra") or {}).items()},
         )
-    if "default" not in profiles:
-        profiles["default"] = ActorProfile(name="default")
+    profiles.setdefault("default", ActorProfile(name="default"))
     return profiles
 
 
 def _parse_actors(raw: dict[str, Any] | None) -> ScenarioActors:
     raw = raw or {}
-    pools = _parse_pools(raw.get("pools") or raw)
-    profiles = _parse_profiles(raw.get("profiles"))
-    if raw.get("users") or raw.get("src_ips"):
-        pools = _parse_pools(raw)
+    pools_src = raw if (raw.get("users") or raw.get("src_ips")) else (raw.get("pools") or {})
     return ScenarioActors(
-        profiles=profiles,
-        pools=pools,
+        profiles=_parse_profiles(raw.get("profiles")),
+        pools=_parse_pools(pools_src),
         default_profile=str(raw.get("default_profile", "default")),
     )
 
@@ -114,12 +200,11 @@ def _parse_event(raw: dict[str, Any]) -> ScenarioEvent:
 
 
 def _parse_phase(name: str, raw: dict[str, Any]) -> ScenarioPhase:
-    events = [_parse_event(item) for item in raw.get("events", []) if isinstance(item, dict)]
     return ScenarioPhase(
         name=name,
         description=str(raw.get("description", "")),
         delay_before=float(raw.get("delay_before", 0.0)),
-        events=events,
+        events=[_parse_event(i) for i in raw.get("events", []) if isinstance(i, dict)],
     )
 
 
@@ -128,13 +213,9 @@ def load_scenario(path: Path) -> Scenario:
     phases_raw = data.get("phases", {})
     phases: list[ScenarioPhase] = []
     if isinstance(phases_raw, dict):
-        for phase_name, phase_data in phases_raw.items():
-            if isinstance(phase_data, dict):
-                phases.append(_parse_phase(str(phase_name), phase_data))
+        phases = [_parse_phase(str(n), p) for n, p in phases_raw.items() if isinstance(p, dict)]
     elif isinstance(phases_raw, list):
-        for item in phases_raw:
-            if isinstance(item, dict) and "name" in item:
-                phases.append(_parse_phase(str(item["name"]), item))
+        phases = [_parse_phase(str(i["name"]), i) for i in phases_raw if isinstance(i, dict) and "name" in i]
     return Scenario(
         name=str(data.get("name", path.stem)),
         description=str(data.get("description", "")),
@@ -144,3 +225,46 @@ def load_scenario(path: Path) -> Scenario:
         metadata={str(k): v for k, v in (data.get("metadata") or {}).items()},
         timeline_minutes=int(data.get("timeline_minutes", 0)),
     )
+
+
+# --------------------------------------------------------------------------- #
+# Validación
+# --------------------------------------------------------------------------- #
+
+def validate_all(scenario_path: Path, templates_path: Path) -> list[str]:
+    from .render import SUPPORTED_FORMATS
+
+    templates = load_templates(templates_path)
+    scenario = load_scenario(scenario_path)
+    errors: list[str] = []
+
+    for event_id, tmpl in templates.items():
+        if not tmpl.body.strip():
+            errors.append(f"Evento {event_id}: body vacío")
+        if tmpl.format not in SUPPORTED_FORMATS:
+            errors.append(f"Evento {event_id}: formato desconocido {tmpl.format!r}")
+        if not 0 <= tmpl.pri <= 199:
+            errors.append(f"Evento {event_id}: PRI fuera de rango ({tmpl.pri})")
+
+    if not scenario.phases:
+        errors.append("Escenario sin fases")
+    seen: set[str] = set()
+    for phase in scenario.phases:
+        if phase.name in seen:
+            errors.append(f"Fase duplicada: {phase.name!r}")
+        seen.add(phase.name)
+        if not phase.events:
+            errors.append(f"Fase {phase.name!r} sin eventos")
+        for event in phase.events:
+            if event.id not in templates:
+                errors.append(f"Fase {phase.name}: evento desconocido {event.id!r}")
+            if event.actor and event.actor not in scenario.actors.profiles:
+                errors.append(f"Fase {phase.name}: actor {event.actor!r} no definido")
+
+    for name, profile in scenario.actors.profiles.items():
+        for label, value in (("src_ip", profile.src_ip), ("reporting_ip", profile.reporting_ip)):
+            try:
+                ipaddress.IPv4Address(value)
+            except ValueError:
+                errors.append(f"Actor {name}: {label} no es IPv4 válida ({value})")
+    return errors

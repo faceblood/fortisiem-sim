@@ -85,7 +85,13 @@ fortisiem-sim/
 ├── templates/events.yaml    # 27 plantillas reutilizables
 ├── scenarios/tabletop.yml   # Escenario con perfiles de actor
 ├── schemas/                 # JSON Schema (referencia)
-├── src/fortisiem_sim/       # Paquete
+├── src/fortisiem_sim/       # Paquete (8 módulos)
+│   ├── models.py            # dataclasses (datos)
+│   ├── loaders.py           # rutas, lab.yaml, escenarios, plantillas, validación
+│   ├── render.py            # contexto, placeholders y formatos de salida
+│   ├── syslog.py            # envío Scapy
+│   ├── engine.py            # ejecución + resumen
+│   └── cli.py               # CLI
 └── tests/
 ```
 

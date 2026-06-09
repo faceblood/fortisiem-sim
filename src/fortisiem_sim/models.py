@@ -89,58 +89,7 @@ class Scenario:
     timeline_minutes: int = 0
 
 
-@dataclass
-class RenderContext:
-    timestamp: str
-    date: str
-    time: str
-    epoch: str
-    syslog_ts: str
-    src_ip: str
-    reporting_ip: str
-    dst_ip: str
-    hostname: str
-    user: str
-    domain: str
-    org_id: str
-    country: str
-    action: str
-    severity: str
-    process: str
-    command: str
-    file_path: str
-    device_id: str
-    serial: str
-    simulation_marker: str
-    extra: dict[str, str] = field(default_factory=dict)
-
-    def as_dict(self) -> dict[str, str]:
-        base = {
-            "timestamp": self.timestamp,
-            "date": self.date,
-            "time": self.time,
-            "epoch": self.epoch,
-            "syslog_ts": self.syslog_ts,
-            "src_ip": self.src_ip,
-            "reporting_ip": self.reporting_ip,
-            "dst_ip": self.dst_ip,
-            "hostname": self.hostname,
-            "user": self.user,
-            "domain": self.domain,
-            "org_id": self.org_id,
-            "country": self.country,
-            "action": self.action,
-            "severity": self.severity,
-            "process": self.process,
-            "command": self.command,
-            "file_path": self.file_path,
-            "device_id": self.device_id,
-            "serial": self.serial,
-            "simulation_marker": self.simulation_marker,
-        }
-        base.update(self.extra)
-        return base
-
+# El contexto de render es un dict[str, str] plano (ver render.build_context).
 
 @dataclass
 class SendOptions:
@@ -188,4 +137,3 @@ class RunSummary:
     by_format: dict[str, int] = field(default_factory=dict)
     by_phase: dict[str, int] = field(default_factory=dict)
     by_event: dict[str, int] = field(default_factory=dict)
-    errors: list[str] = field(default_factory=list)

@@ -4,9 +4,25 @@ import random
 import re
 from datetime import datetime, timedelta
 
-from .models import ActorProfile, EventTemplate, RenderContext, Scenario, SendOptions
+from .models import ActorProfile, EventTemplate, Scenario, SendOptions
 
 _PLACEHOLDER = re.compile(r"\{\{(\w+)\}\}")
+
+SUPPORTED_FORMATS: dict[str, str] = {
+    "syslog_generic": "RFC3164 genérico con PRI + hostname",
+    "cef": "Common Event Format",
+    "fortiedr_cef": "CEF estilo FortiEDR (simulado)",
+    "fortigate": "FortiGate key=value (VPN/traffic/event)",
+    "linux_auth": "Linux sshd/sudo/auth",
+    "windows_security": "Windows Security Event Log (simulado)",
+    "esxi_vcenter": "VMware ESXi / vCenter",
+    "docker": "Docker / container runtime",
+    "nginx_apache": "HTTP access log Nginx/Apache",
+    "ot_scada": "OT/SCADA alarmas textuales",
+    "crisis_comms": "Comunicación crisis / tabletop IR",
+}
+
+_PASSTHROUGH = {"nginx_apache", "docker", "ot_scada", "crisis_comms"}
 
 
 def _pick(pool: list[str], fallback: str) -> str:
@@ -15,12 +31,9 @@ def _pick(pool: list[str], fallback: str) -> str:
 
 def resolve_actor(scenario: Scenario, actor_name: str) -> ActorProfile:
     profiles = scenario.actors.profiles
-    key = actor_name or scenario.actors.default_profile
-    if key in profiles:
-        return profiles[key]
-    if "default" in profiles:
-        return profiles["default"]
-    return ActorProfile(name="default")
+    return profiles.get(actor_name or scenario.actors.default_profile) or profiles.get(
+        "default", ActorProfile(name="default")
+    )
 
 
 def build_context(
@@ -32,7 +45,8 @@ def build_context(
     overrides: dict[str, str] | None = None,
     sequence_index: int = 0,
     timeline_total: int = 0,
-) -> RenderContext:
+) -> dict[str, str]:
+    """Construye el contexto de render como dict plano de placeholders."""
     pools = scenario.actors.pools
     profile = resolve_actor(scenario, actor_name)
     overrides = dict(overrides or {})
@@ -58,51 +72,63 @@ def build_context(
     if options.randomize_reporting_ip:
         reporting_ip = _pick(pools.reporting_ips, reporting_ip)
 
-    defaults = dict(template.defaults)
-    defaults.update(profile.extra)
-    defaults.update(overrides)
+    ctx: dict[str, str] = {
+        "timestamp": now.isoformat(timespec="seconds"),
+        "date": now.strftime("%Y-%m-%d"),
+        "time": now.strftime("%H:%M:%S"),
+        "epoch": str(int(now.timestamp())),
+        "syslog_ts": now.strftime("%b %d %H:%M:%S"),
+        "src_ip": src_ip,
+        "reporting_ip": reporting_ip,
+        "dst_ip": "10.255.9.3",
+        "hostname": hostname,
+        "user": user,
+        "domain": domain,
+        "org_id": str(scenario.org_id),
+        "country": "ES",
+        "action": "simulated",
+        "severity": template.severity,
+        "process": "simulated-process",
+        "command": "echo simulated-lab-only",
+        "file_path": "/var/log/simulated.log",
+        "device_id": "LAB-DEVICE-001",
+        "serial": "SIM0000001",
+        "simulation_marker": options.simulation_marker,
+    }
+    # defaults de plantilla + extra de actor + overrides del evento (en este orden de prioridad)
+    ctx.update(template.defaults)
+    ctx.update(profile.extra)
+    ctx.update(overrides)
+    return ctx
 
-    syslog_ts = now.strftime("%b %d %H:%M:%S")
-    return RenderContext(
-        timestamp=now.isoformat(timespec="seconds"),
-        date=now.strftime("%Y-%m-%d"),
-        time=now.strftime("%H:%M:%S"),
-        epoch=str(int(now.timestamp())),
-        syslog_ts=syslog_ts,
-        src_ip=src_ip,
-        reporting_ip=reporting_ip,
-        dst_ip=defaults.get("dst_ip", "10.255.9.3"),
-        hostname=hostname,
-        user=user,
-        domain=domain,
-        org_id=str(scenario.org_id),
-        country=defaults.get("country", "ES"),
-        action=defaults.get("action", "simulated"),
-        severity=template.severity,
-        process=defaults.get("process", "simulated-process"),
-        command=defaults.get("command", "echo simulated-lab-only"),
-        file_path=defaults.get("file_path", "/var/log/simulated.log"),
-        device_id=defaults.get("device_id", "LAB-DEVICE-001"),
-        serial=defaults.get("serial", "SIM0000001"),
-        simulation_marker=options.simulation_marker,
-        extra={k: v for k, v in defaults.items()},
-    )
 
-
-def render_body(template: EventTemplate, ctx: RenderContext) -> str:
-    mapping = ctx.as_dict()
-
-    def repl(match: re.Match[str]) -> str:
-        return mapping.get(match.group(1), match.group(0))
-
-    body = _PLACEHOLDER.sub(repl, template.body)
-    if ctx.simulation_marker and ctx.simulation_marker not in body:
-        body = f"{body} {ctx.simulation_marker}"
+def render_body(template: EventTemplate, ctx: dict[str, str]) -> str:
+    body = _PLACEHOLDER.sub(lambda m: ctx.get(m.group(1), m.group(0)), template.body)
+    marker = ctx.get("simulation_marker", "")
+    if marker and marker not in body:
+        body = f"{body} {marker}"
     return body
 
 
-def render_wire(template: EventTemplate, ctx: RenderContext) -> str:
-    from .formats import build_wire_message
+def build_wire(template: EventTemplate, body: str, ctx: dict[str, str]) -> str:
+    """Aplica el envoltorio según el formato del evento."""
+    fmt = template.format
+    if fmt in _PASSTHROUGH:
+        return body
+    if fmt == "cef" and not body.startswith("CEF:"):
+        return f"CEF:0|LabVendor|LabSim|2.0|9000|SimulatedEvent|5|{body}"
+    if fmt == "fortiedr_cef" and not body.startswith("CEF:"):
+        return (
+            f"CEF:0|Fortinet|FortiEDR|7.0|SimulatedDetection|{ctx.get('severity', 'Medium')}|"
+            f"msg=Simulated EDR src={ctx.get('src_ip')} suser={ctx.get('user')} "
+            f"shost={ctx.get('hostname')} cs1Label=simulated cs1=true"
+        )
+    # RFC3164: <PRI>timestamp hostname mensaje
+    hostname = template.syslog_hostname
+    if "{{hostname}}" in hostname or not hostname.strip():
+        hostname = ctx.get("hostname", "lab-host")
+    return f"<{template.pri}>{ctx.get('syslog_ts', '')} {hostname} {body}"
 
-    body = render_body(template, ctx)
-    return build_wire_message(template, body, ctx.as_dict())
+
+def render_wire(template: EventTemplate, ctx: dict[str, str]) -> str:
+    return build_wire(template, render_body(template, ctx), ctx)

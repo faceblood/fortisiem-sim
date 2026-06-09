@@ -4,10 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from fortisiem_sim.loaders import load_scenario, load_templates
+from fortisiem_sim.loaders import load_scenario, load_templates, validate_all
 from fortisiem_sim.models import SendOptions
 from fortisiem_sim.render import build_context, render_body, render_wire
-from fortisiem_sim.validators import validate_all
 
 
 ROOT = Path(__file__).resolve().parent.parent
