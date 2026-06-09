@@ -4,6 +4,8 @@ import json
 from dataclasses import asdict
 from pathlib import Path
 
+import yaml
+
 from .assets import assets_to_actors, load_assets, save_assets, save_scenario_from_builder
 from .engine import iter_scenario_stream, run_scenario
 from .loaders import (
@@ -12,6 +14,12 @@ from .loaders import (
     load_templates,
     resolve_scenario,
     resolve_templates_path,
+)
+from .mitre import (
+    build_event_catalog,
+    guess_tactic_from_phase,
+    index_events_by_tactic,
+    list_tactics,
 )
 from .models import EmittedEvent, RunSummary, Scenario, SendOptions
 
@@ -70,32 +78,62 @@ def _scenario_payload(path: Path) -> dict:
     }
 
 
+def _scenario_list_payload() -> list[dict]:
+    items: list[dict] = []
+    for path in list_scenarios():
+        sc = load_scenario(path)
+        total_events = sum(sum(e.count for e in ph.events) for ph in sc.phases)
+        items.append({
+            "id": path.stem,
+            "file": path.name,
+            "name": sc.name,
+            "description": sc.description,
+            "phases": len(sc.phases),
+            "events": total_events,
+            "timeline_minutes": sc.timeline_minutes,
+        })
+    return items
+
+
 def _scenario_builder_payload(path: Path) -> dict:
     sc = load_scenario(path)
+    raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    phases_raw = raw.get("phases", {}) if isinstance(raw.get("phases"), dict) else {}
+    actor_keys = list(sc.actors.profiles.keys()) if sc.actors.profiles else []
+    phases_out = []
+    for ph in sc.phases:
+        raw_ph = phases_raw.get(ph.name, {}) if isinstance(phases_raw, dict) else {}
+        mitre_raw = raw_ph.get("mitre", {}) if isinstance(raw_ph, dict) else {}
+        mitre_tactic = str(mitre_raw.get("tactic", "")) if mitre_raw else ""
+        if not mitre_tactic:
+            mitre_tactic = guess_tactic_from_phase(ph.name, ph.description)
+        mitre_techniques = mitre_raw.get("techniques", []) if mitre_raw else []
+        phases_out.append({
+            "name": ph.name,
+            "description": ph.description,
+            "delay_before": ph.delay_before,
+            "mitre_tactic": mitre_tactic,
+            "mitre_techniques": mitre_techniques,
+            "events": [
+                {
+                    "id": e.id,
+                    "count": e.count,
+                    "actor": e.actor or "",
+                    "delay": e.delay,
+                    "jitter": e.jitter,
+                }
+                for e in ph.events
+            ],
+        })
     return {
+        "id": path.stem,
         "name": sc.name,
         "description": sc.description,
         "org_id": sc.org_id,
         "timeline_minutes": sc.timeline_minutes,
         "use_config_actors": False,
-        "phases": [
-            {
-                "name": ph.name,
-                "description": ph.description,
-                "delay_before": ph.delay_before,
-                "events": [
-                    {
-                        "id": e.id,
-                        "count": e.count,
-                        "actor": e.actor or "",
-                        "delay": e.delay,
-                        "jitter": e.jitter,
-                    }
-                    for e in ph.events
-                ],
-            }
-            for ph in sc.phases
-        ],
+        "actor_keys": actor_keys,
+        "phases": phases_out,
     }
 
 
@@ -118,7 +156,11 @@ def create_app(templates_path: Path | None = None):
 
     @app.get("/api/scenarios")
     def api_scenarios():
-        return jsonify({"scenarios": [p.stem for p in list_scenarios()]})
+        items = _scenario_list_payload()
+        return jsonify({
+            "scenarios": [i["id"] for i in items],
+            "items": items,
+        })
 
     @app.get("/api/scenarios/<name>")
     def api_scenario(name: str):
@@ -163,10 +205,17 @@ def create_app(templates_path: Path | None = None):
 
     @app.get("/api/events")
     def api_events():
+        catalog = build_event_catalog(templates)
         return jsonify({
             "ids": sorted(templates.keys()),
             "count": len(templates),
+            "catalog": catalog,
+            "by_tactic": index_events_by_tactic(catalog),
         })
+
+    @app.get("/api/mitre/tactics")
+    def api_mitre_tactics():
+        return jsonify({"tactics": list_tactics()})
 
     @app.get("/api/run/stream")
     def api_run_stream():

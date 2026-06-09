@@ -122,7 +122,7 @@ phases:
         count: 3
 
   ot_crisis:
-    description: OT degradado + crisis comms
+    description: OT degradado simulado
     delay_before: 5.0
     events:
       - id: telemetry_delay
@@ -134,11 +134,4 @@ phases:
         count: 1
       - id: degraded_mode
         actor: operator
-        count: 1
-      - id: incident_escalation
-        actor: operator
-        count: 1
-      - id: regulator_notification
-        count: 1
-      - id: holding_statement
         count: 1

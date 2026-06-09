@@ -16,7 +16,7 @@ SCENARIO = ROOT / "scenarios" / "tabletop.yml"
 
 def test_templates_load():
     templates = load_templates(TEMPLATES)
-    assert len(templates) >= 27
+    assert len(templates) >= 23
     assert "login_success" in templates
 
 

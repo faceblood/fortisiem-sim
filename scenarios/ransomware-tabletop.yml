@@ -175,7 +175,7 @@ phases:
         count: 1
 
   ot_and_crisis:
-    description: "Impacto OT secundario + tabletop de crisis/comunicación"
+    description: "Impacto OT secundario simulado"
     delay_before: 15.0
     events:
       - id: telemetry_delay
@@ -188,13 +188,4 @@ phases:
         delay: 2.0
       - id: alarm_suppressed
         actor: ot_operator
-        count: 1
-      - id: incident_escalation
-        actor: ir_lead
-        count: 1
-      - id: regulator_notification
-        count: 1
-      - id: public_leak
-        count: 1
-      - id: holding_statement
         count: 1

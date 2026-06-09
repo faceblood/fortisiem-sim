@@ -47,6 +47,20 @@ textarea { min-height: 60px; resize: vertical; }
 .chip { background: var(--bg); border: 1px solid var(--border); border-radius: 999px; padding: 4px 10px; font-size: 12px; display: flex; align-items: center; gap: 6px; }
 .chip button { background: none; border: none; color: var(--red); cursor: pointer; padding: 0; font-size: 14px; }
 .phase-block { border: 1px dashed var(--border); border-radius: 8px; padding: 12px; margin-bottom: 12px; }
+.phase-block .mitre-badge { display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 999px; background: #a371f722; border: 1px solid #a371f755; color: var(--purple); margin-bottom: 8px; }
 .event-row { display: grid; grid-template-columns: 2fr 1fr 1fr 1fr 1.5fr auto; gap: 6px; align-items: end; margin-bottom: 8px; }
 @media (max-width: 800px) { .event-row { grid-template-columns: 1fr 1fr; } }
 .meta { color: var(--muted); font-size: 12px; }
+.mode-toggle { display: flex; gap: 6px; margin-bottom: 10px; }
+.mode-toggle button { flex: 1; padding: 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--muted); cursor: pointer; font-weight: 600; }
+.mode-toggle button.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+.scenario-list { display: grid; gap: 8px; max-height: 220px; overflow: auto; margin-top: 6px; }
+.scenario-item { display: block; width: 100%; text-align: left; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); color: var(--fg); cursor: pointer; }
+.scenario-item:hover { border-color: var(--accent); }
+.scenario-item.active { border-color: var(--accent); background: #1f6feb18; }
+.scenario-item .si-title { font-weight: 600; font-size: 13px; }
+.scenario-item .si-meta { font-size: 11px; color: var(--muted); margin-top: 4px; }
+.sc-preview { margin-top: 12px; padding: 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); font-size: 12px; }
+.catalog-table .pill { margin: 1px 2px; font-size: 10px; }
+.ph-event-hint { margin: 4px 0 8px; }
+.event-row .ev-ttp { font-size: 10px; color: var(--muted); margin-top: 2px; }

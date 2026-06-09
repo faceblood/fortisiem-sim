@@ -276,37 +276,3 @@ events:
     fields: [hostname, device_id]
     body: |
       [OT-SIM] device={{device_id}} state=DEGRADED host={{hostname}} msg="Simulated degraded operation for crisis drill" simulated=true
-
-  incident_escalation:
-    name: Incident escalation comms (simulated)
-    format: crisis_comms
-    severity: notice
-    syslog_hostname: soc-comms
-    fields: [user]
-    body: |
-      [CRISIS-SIM] timestamp={{timestamp}} level=ESCALATION analyst={{user}} msg="Tabletop: escalate to IR manager (simulated)" orgId={{org_id}}
-
-  regulator_notification:
-    name: Regulator notification draft (simulated)
-    format: crisis_comms
-    severity: notice
-    syslog_hostname: legal-comms
-    body: |
-      [CRISIS-SIM] timestamp={{timestamp}} type=REGULATOR_NOTIFY status=DRAFT msg="Simulated regulatory notification template — no real breach" orgId={{org_id}}
-
-  public_leak:
-    name: Public leak rumor (simulated crisis)
-    format: crisis_comms
-    severity: critical
-    syslog_hostname: pr-comms
-    pri: 130
-    body: |
-      [CRISIS-SIM] timestamp={{timestamp}} channel=MONITORING msg="Simulated social media rumor — tabletop only" orgId={{org_id}}
-
-  holding_statement:
-    name: Holding statement (simulated PR)
-    format: crisis_comms
-    severity: info
-    syslog_hostname: pr-comms
-    body: |
-      [CRISIS-SIM] timestamp={{timestamp}} type=HOLDING_STATEMENT msg="We are investigating an simulated exercise event. No customer impact in lab." orgId={{org_id}}

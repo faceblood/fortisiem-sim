@@ -62,12 +62,33 @@ def test_api_config_get(client):
     assert "actor_keys" in data
 
 
+def test_api_mitre_tactics(client):
+    r = client.get("/api/mitre/tactics")
+    assert r.status_code == 200
+    data = r.get_json()
+    assert len(data["tactics"]) >= 14
+    assert data["tactics"][0]["id"].startswith("TA")
+
+
 def test_api_events(client):
     r = client.get("/api/events")
     assert r.status_code == 200
     data = r.get_json()
-    assert data["count"] >= 27
+    assert data["count"] >= 23
     assert "login_success" in data["ids"]
+    assert "catalog" in data
+    assert len(data["catalog"]) == data["count"]
+    assert "by_tactic" in data
+    assert "login_failed" in data["by_tactic"]["TA0001"]
+
+
+def test_api_scenarios_list_has_items(client):
+    r = client.get("/api/scenarios")
+    assert r.status_code == 200
+    data = r.get_json()
+    assert "items" in data
+    assert len(data["items"]) >= 1
+    assert "phases" in data["items"][0]
 
 
 def test_index_serves_html(client):

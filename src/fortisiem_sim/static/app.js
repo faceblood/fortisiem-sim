@@ -47,6 +47,8 @@ const state = {
   es: null,
   eventCount: 0,
   expectedTotal: 0,
+  eventCatalog: [],
+  eventsByTactic: {},
 };
 
 /* ========== EJECUTAR ========== */
@@ -349,6 +351,132 @@ $("btn-save-config").addEventListener("click", async () => {
 
 /* ========== ESCENARIO BUILDER ========== */
 let scPhases = [];
+let scMode = "new";
+let scItems = [];
+let scLoadedId = null;
+let mitreTactics = [];
+
+function mitreOptions(selected) {
+  const opts =
+    '<option value="">— personalizada / sin táctica —</option>' +
+    mitreTactics
+      .map(
+        (t) =>
+          `<option value="${esc(t.id)}"${t.id === selected ? " selected" : ""}>${esc(t.id)} · ${esc(t.name)}</option>`
+      )
+      .join("");
+  return opts;
+}
+
+function fillMitreAddSelect() {
+  const sel = $("sc-add-tactic");
+  if (!sel) return;
+  sel.innerHTML = mitreTactics
+    .map((t) => `<option value="${esc(t.id)}">${esc(t.id)} · ${esc(t.name)}</option>`)
+    .join("");
+}
+
+function getTacticById(id) {
+  return mitreTactics.find((t) => t.id === id);
+}
+
+function applyMitreToPhaseBlock(block, tacticId, replaceEvents) {
+  const tactic = getTacticById(tacticId);
+  if (!tactic) return;
+  block.querySelector(".ph-mitre").value = tactic.id;
+  block.querySelector(".ph-name").value = tactic.slug;
+  block.querySelector(".ph-desc").value = tactic.description;
+  const badge = block.querySelector(".mitre-badge");
+  if (badge) badge.textContent = `${tactic.id} · ${tactic.name} · ${(tactic.techniques || []).join(", ")}`;
+  if (replaceEvents && tactic.suggested_events?.length) {
+    const wrap = block.querySelector(".events-wrap");
+    wrap.innerHTML = "";
+    tactic.suggested_events.forEach((ev) => wrap.appendChild(renderEventRow({ ...ev, actor: "" }, block)));
+  }
+  refreshPhaseEventSelects(block);
+}
+
+function phaseFromTactic(tacticId, withEvents) {
+  const tactic = getTacticById(tacticId);
+  if (!tactic) return { name: "fase", description: "", delay_before: 0, events: [] };
+  return {
+    name: tactic.slug,
+    description: tactic.description,
+    delay_before: 0,
+    mitre_tactic: tactic.id,
+    mitre_techniques: tactic.techniques || [],
+    events: withEvents
+      ? (tactic.suggested_events || []).map((ev) => ({ ...ev, actor: "" }))
+      : [{ id: firstAllowedEventId(tactic.id) || "login_failed", count: 1, actor: "", delay: 0.5, jitter: 0.2 }],
+  };
+}
+
+function setScenarioMode(mode) {
+  scMode = mode;
+  $("sc-mode-new").classList.toggle("active", mode === "new");
+  $("sc-mode-load").classList.toggle("active", mode === "load");
+  $("sc-load-panel").style.display = mode === "load" ? "block" : "none";
+  $("sc-new-hint").style.display = mode === "new" ? "block" : "none";
+  if (mode === "new") {
+    scLoadedId = null;
+    renderScenarioPreview(null);
+    document.querySelectorAll(".scenario-item").forEach((el) => el.classList.remove("active"));
+  }
+}
+
+function renderScenarioPreview(item) {
+  const box = $("sc-preview");
+  if (!item) {
+    box.style.display = "none";
+    box.innerHTML = "";
+    return;
+  }
+  box.style.display = "block";
+  box.innerHTML = `
+    <h4>${esc(item.name || item.id)}</h4>
+    <div class="meta">${esc(item.description || "Sin descripción")}</div>
+    <div class="meta">${item.phases} fases · ~${item.events} eventos · timeline ${item.timeline_minutes || 0} min · <code>${esc(item.file || item.id + ".yml")}</code></div>`;
+}
+
+function renderScenarioList(items, selectedId) {
+  scItems = items;
+  const list = $("sc-scenario-list");
+  if (!items.length) {
+    list.innerHTML = '<div class="meta">No hay escenarios en scenarios/. Crea uno nuevo y guárdalo.</div>';
+    return;
+  }
+  list.innerHTML = items
+    .map(
+      (it) => `
+    <button type="button" class="scenario-item${it.id === selectedId ? " active" : ""}" data-id="${esc(it.id)}">
+      <div class="si-title">${esc(it.name || it.id)}</div>
+      <div class="si-meta">${it.phases} fases · ~${it.events} ev. · ${esc(it.file)}</div>
+    </button>`
+    )
+    .join("");
+  list.querySelectorAll(".scenario-item").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      $("sc-load").value = btn.dataset.id;
+      loadScenarioBuilder(btn.dataset.id);
+    });
+  });
+}
+
+function fillScenarioSelect(items, selectedId) {
+  const sel = $("sc-load");
+  sel.innerHTML =
+    '<option value="">— elegir escenario —</option>' +
+    items.map((it) => `<option value="${esc(it.id)}">${esc(it.name || it.id)} (${it.phases} fases)</option>`).join("");
+  if (selectedId) sel.value = selectedId;
+}
+
+async function refreshScenarioCatalog(selectId) {
+  const data = await api("/api/scenarios");
+  const items = data.items || data.scenarios.map((id) => ({ id, name: id, phases: "?", events: "?", file: id + ".yml" }));
+  renderScenarioList(items, selectId || scLoadedId);
+  fillScenarioSelect(items, selectId || scLoadedId);
+  return items;
+}
 
 function actorOptions(selected) {
   const keys = state.actorKeys.length ? state.actorKeys : ["default"];
@@ -358,51 +486,169 @@ function actorOptions(selected) {
   );
 }
 
-function eventOptions(selected) {
-  return state.eventIds
-    .map((id) => `<option value="${esc(id)}"${id === selected ? " selected" : ""}>${esc(id)}</option>`)
+function getCatalogEntry(eventId) {
+  return state.eventCatalog.find((e) => e.id === eventId);
+}
+
+function allowedEventIds(tacticId) {
+  if (!tacticId) return [];
+  return state.eventsByTactic[tacticId] || [];
+}
+
+function firstAllowedEventId(tacticId) {
+  const ids = allowedEventIds(tacticId);
+  return ids[0] || "";
+}
+
+function eventOptions(selected, tacticId) {
+  const ids = tacticId ? allowedEventIds(tacticId) : [];
+  if (!tacticId) {
+    return `<option value="">— elige táctica MITRE primero —</option>`;
+  }
+  if (!ids.length) {
+    return `<option value="">— sin eventos para ${esc(tacticId)} —</option>`;
+  }
+  return ids
+    .map((id) => {
+      const entry = getCatalogEntry(id);
+      const ttp = entry ? entry.techniques.join(", ") : "";
+      const label = ttp ? `${id} (${ttp})` : id;
+      return `<option value="${esc(id)}"${id === selected ? " selected" : ""}>${esc(label)}</option>`;
+    })
+    .join("");
+}
+
+function updatePhaseEventHint(block) {
+  const hint = block.querySelector(".ph-event-hint");
+  if (!hint) return;
+  const tid = block.querySelector(".ph-mitre").value;
+  if (!tid) {
+    hint.textContent = "Selecciona una táctica MITRE para habilitar eventos compatibles.";
+    return;
+  }
+  const ids = allowedEventIds(tid);
+  hint.textContent = ids.length
+    ? `${ids.length} evento(s) disponibles para ${tid}: ${ids.join(", ")}`
+    : `No hay eventos mapeados para ${tid}.`;
+}
+
+function refreshPhaseEventSelects(block) {
+  const tid = block.querySelector(".ph-mitre").value;
+  const allowed = new Set(allowedEventIds(tid));
+  block.querySelectorAll(".event-row").forEach((row) => {
+    const sel = row.querySelector(".ev-id");
+    const cur = sel.value;
+    sel.innerHTML = eventOptions(cur, tid);
+    if (tid && cur && !allowed.has(cur)) {
+      sel.value = firstAllowedEventId(tid);
+    }
+    updateEventRowTtp(row, sel.value);
+  });
+  updatePhaseEventHint(block);
+  const addBtn = block.querySelector(".add-event");
+  if (addBtn) addBtn.disabled = !tid || !allowed.size;
+}
+
+function updateEventRowTtp(row, eventId) {
+  const el = row.querySelector(".ev-ttp");
+  if (!el) return;
+  const entry = getCatalogEntry(eventId);
+  el.textContent = entry
+    ? `${entry.tactics.join(" · ")} — ${entry.techniques.join(", ")}`
+    : "";
+}
+
+function renderEventCatalogTable() {
+  const body = $("event-catalog-body");
+  const countEl = $("catalog-count");
+  if (!body) return;
+  if (countEl) countEl.textContent = state.eventCatalog.length;
+  body.innerHTML = state.eventCatalog
+    .map(
+      (e) => `
+    <tr>
+      <td><code>${esc(e.id)}</code></td>
+      <td>${esc(e.name)}</td>
+      <td>${(e.tactics || []).map((t) => `<span class="pill">${esc(t)}</span>`).join(" ")}</td>
+      <td><span class="meta">${esc((e.techniques || []).join(", "))}</span></td>
+    </tr>`
+    )
     .join("");
 }
 
 function renderPhaseBlock(ph, pi) {
+  const tactic = ph.mitre_tactic ? getTacticById(ph.mitre_tactic) : null;
+  const badgeText = tactic
+    ? `${tactic.id} · ${tactic.name} · ${(tactic.techniques || ph.mitre_techniques || []).join(", ")}`
+    : ph.mitre_tactic
+      ? ph.mitre_tactic
+      : "Sin táctica MITRE";
   const div = document.createElement("div");
   div.className = "phase-block";
   div.dataset.pi = pi;
   div.innerHTML = `
+    <div class="mitre-badge">${esc(badgeText)}</div>
     <div class="row">
-      <div><label>Nombre fase</label><input class="ph-name" value="${esc(ph.name)}"></div>
+      <div><label>Táctica MITRE ATT&CK</label><select class="ph-mitre">${mitreOptions(ph.mitre_tactic || "")}</select></div>
+      <div><label>Clave fase (YAML)</label><input class="ph-name" value="${esc(ph.name)}"></div>
       <div><label>delay_before (s)</label><input class="ph-delay" type="number" step="0.1" value="${ph.delay_before ?? 0}"></div>
-      <div style="flex:0"><label>&nbsp;</label><button type="button" class="btn btn-danger btn-sm rm-phase">Eliminar fase</button></div>
+      <div style="flex:0"><label>&nbsp;</label><button type="button" class="btn btn-danger btn-sm rm-phase">Eliminar</button></div>
     </div>
-    <label>Descripción</label>
+    <label>Descripción (TTP)</label>
     <input class="ph-desc" value="${esc(ph.description || "")}">
+    <div class="row" style="margin:6px 0">
+      <button type="button" class="btn btn-ghost btn-sm ph-apply-events">Aplicar eventos sugeridos MITRE</button>
+    </div>
+    <div class="meta ph-event-hint"></div>
     <div class="events-wrap"></div>
-    <button type="button" class="btn btn-ghost btn-sm add-event">+ Evento</button>`;
+    <button type="button" class="btn btn-ghost btn-sm add-event" disabled>+ Evento (MITRE)</button>`;
 
   const wrap = div.querySelector(".events-wrap");
-  (ph.events || []).forEach((ev, ei) => wrap.appendChild(renderEventRow(ev, pi, ei)));
+  (ph.events || []).forEach((ev) => wrap.appendChild(renderEventRow(ev, div)));
 
+  div.querySelector(".ph-mitre").addEventListener("change", (e) => {
+    if (e.target.value) applyMitreToPhaseBlock(div, e.target.value, false);
+    else {
+      div.querySelector(".mitre-badge").textContent = "Sin táctica MITRE";
+      refreshPhaseEventSelects(div);
+    }
+  });
+  div.querySelector(".ph-apply-events").addEventListener("click", () => {
+    const tid = div.querySelector(".ph-mitre").value;
+    if (tid) applyMitreToPhaseBlock(div, tid, true);
+  });
   div.querySelector(".add-event").addEventListener("click", () => {
-    const ev = { id: state.eventIds[0] || "login_failed", count: 1, actor: "", delay: 0.5, jitter: 0.2 };
-    wrap.appendChild(renderEventRow(ev, pi, wrap.children.length));
+    const tid = div.querySelector(".ph-mitre").value;
+    const ev = {
+      id: firstAllowedEventId(tid) || "",
+      count: 1,
+      actor: "",
+      delay: 0.5,
+      jitter: 0.2,
+    };
+    wrap.appendChild(renderEventRow(ev, div));
   });
   div.querySelector(".rm-phase").addEventListener("click", () => {
     scPhases.splice(pi, 1);
     renderAllPhases();
   });
+  refreshPhaseEventSelects(div);
   return div;
 }
 
-function renderEventRow(ev, pi, ei) {
+function renderEventRow(ev, block) {
+  const tid = block.querySelector(".ph-mitre").value;
   const row = document.createElement("div");
   row.className = "event-row";
   row.innerHTML = `
-    <div><label>event id</label><select class="ev-id">${eventOptions(ev.id)}</select></div>
+    <div><label>event id</label><select class="ev-id">${eventOptions(ev.id, tid)}</select><div class="ev-ttp"></div></div>
     <div><label>count</label><input class="ev-count" type="number" min="1" value="${ev.count ?? 1}"></div>
     <div><label>delay</label><input class="ev-delay" type="number" step="0.1" value="${ev.delay ?? ""}"></div>
     <div><label>jitter</label><input class="ev-jitter" type="number" step="0.1" value="${ev.jitter ?? ""}"></div>
     <div><label>actor</label><select class="ev-actor">${actorOptions(ev.actor)}</select></div>
     <div><label>&nbsp;</label><button type="button" class="btn btn-ghost btn-sm rm-ev">×</button></div>`;
+  row.querySelector(".ev-id").addEventListener("change", (e) => updateEventRowTtp(row, e.target.value));
+  updateEventRowTtp(row, row.querySelector(".ev-id").value);
   row.querySelector(".rm-ev").addEventListener("click", () => row.remove());
   return row;
 }
@@ -430,6 +676,8 @@ function readPhasesFromUI() {
       name: block.querySelector(".ph-name").value.trim() || "phase",
       description: block.querySelector(".ph-desc").value.trim(),
       delay_before: +block.querySelector(".ph-delay").value || 0,
+      mitre_tactic: block.querySelector(".ph-mitre").value,
+      mitre_techniques: (getTacticById(block.querySelector(".ph-mitre").value)?.techniques) || [],
       events,
     });
   });
@@ -438,12 +686,24 @@ function readPhasesFromUI() {
 
 async function initScenarioTab() {
   try {
-    const [events, scenarios] = await Promise.all([api("/api/events"), api("/api/scenarios")]);
+    const [events, mitre] = await Promise.all([api("/api/events"), api("/api/mitre/tactics")]);
     state.eventIds = events.ids || [];
-    const sel = $("sc-load");
-    sel.innerHTML = scenarios.scenarios.map((s) => `<option value="${s}">${s}</option>`).join("");
+    state.eventCatalog = events.catalog || [];
+    state.eventsByTactic = events.by_tactic || {};
+    renderEventCatalogTable();
+    mitreTactics = mitre.tactics || [];
+    fillMitreAddSelect();
     if (!state.configLoaded) await loadConfig();
-    if (!scPhases.length) newScenario();
+    await refreshScenarioCatalog();
+    if (!state.scenarioReady) {
+      setScenarioMode("load");
+      if (scItems.length) {
+        await loadScenarioBuilder(scItems[0].id);
+      } else {
+        setScenarioMode("new");
+        newScenario();
+      }
+    }
     state.scenarioReady = true;
   } catch (e) {
     banner($("sc-banner"), "live", "Error: " + e.message);
@@ -451,43 +711,77 @@ async function initScenarioTab() {
 }
 
 function newScenario() {
+  scLoadedId = null;
   $("sc-name").value = "mi-ejercicio";
   $("sc-desc").value = "";
   $("sc-org").value = "1";
   $("sc-timeline").value = "0";
   $("sc-use-config").checked = true;
-  scPhases = [
-    {
-      name: "fase_1",
-      description: "Primera fase",
-      delay_before: 0,
-      events: [{ id: state.eventIds[0] || "login_failed", count: 5, actor: "", delay: 0.5, jitter: 0.2 }],
-    },
-  ];
+  if (state.actorKeys.length) state.actorKeys = state.config?.actor_keys || state.actorKeys;
+  scPhases = [phaseFromTactic("TA0001", true)];
   renderAllPhases();
+  renderScenarioPreview(null);
+  document.querySelectorAll(".scenario-item").forEach((el) => el.classList.remove("active"));
   banner($("sc-banner"), "dry", "Escenario nuevo — edita fases y guarda.");
 }
 
-async function loadScenarioBuilder() {
-  const name = $("sc-load").value;
-  if (!name) return;
+async function loadScenarioBuilder(nameOrId) {
+  const name = nameOrId || $("sc-load").value;
+  if (!name) {
+    banner($("sc-banner"), "dry", "Elige un escenario de la lista.");
+    return;
+  }
   try {
     const sc = await api("/api/scenarios/" + encodeURIComponent(name) + "/builder");
+    scLoadedId = sc.id || name;
+    setScenarioMode("load");
     $("sc-name").value = sc.name || name;
     $("sc-desc").value = sc.description || "";
     $("sc-org").value = sc.org_id ?? 1;
     $("sc-timeline").value = sc.timeline_minutes ?? 0;
     $("sc-use-config").checked = !!sc.use_config_actors;
+    if (sc.actor_keys?.length) state.actorKeys = sc.actor_keys;
+    else if (!sc.use_config_actors && state.config?.actor_keys) state.actorKeys = state.config.actor_keys;
     scPhases = sc.phases || [];
     renderAllPhases();
-    banner($("sc-banner"), "ok", `Cargado: ${name}`);
+    const item = scItems.find((it) => it.id === scLoadedId) || {
+      id: scLoadedId,
+      name: sc.name,
+      description: sc.description,
+      phases: sc.phases?.length || 0,
+      events: sc.phases?.reduce((n, p) => n + (p.events || []).reduce((m, e) => m + (+e.count || 1), 0), 0) || 0,
+      timeline_minutes: sc.timeline_minutes,
+      file: scLoadedId + ".yml",
+    };
+    renderScenarioPreview(item);
+    renderScenarioList(scItems, scLoadedId);
+    fillScenarioSelect(scItems, scLoadedId);
+    banner($("sc-banner"), "ok", `Cargado para editar: ${sc.name || name}`);
   } catch (e) {
     banner($("sc-banner"), "live", "Error: " + e.message);
   }
 }
 
-$("btn-sc-new").addEventListener("click", newScenario);
-$("btn-sc-load").addEventListener("click", loadScenarioBuilder);
+$("sc-mode-new").addEventListener("click", () => {
+  setScenarioMode("new");
+  newScenario();
+});
+$("sc-mode-load").addEventListener("click", () => {
+  setScenarioMode("load");
+  if (scItems.length && !scLoadedId) loadScenarioBuilder(scItems[0].id);
+  else banner($("sc-banner"), "dry", "Selecciona un escenario de la lista o del desplegable.");
+});
+$("sc-load").addEventListener("change", () => {
+  if ($("sc-load").value) loadScenarioBuilder($("sc-load").value);
+});
+$("btn-sc-reload").addEventListener("click", async () => {
+  try {
+    await refreshScenarioCatalog(scLoadedId);
+    banner($("sc-banner"), "ok", "Lista actualizada.");
+  } catch (e) {
+    banner($("sc-banner"), "live", "Error: " + e.message);
+  }
+});
 $("btn-add-phase").addEventListener("click", () => {
   scPhases.push({
     name: "fase_" + (scPhases.length + 1),
@@ -496,6 +790,13 @@ $("btn-add-phase").addEventListener("click", () => {
     events: [{ id: state.eventIds[0] || "login_failed", count: 1, actor: "", delay: 0.5, jitter: 0.2 }],
   });
   renderAllPhases();
+});
+$("btn-add-phase-mitre").addEventListener("click", () => {
+  const tid = $("sc-add-tactic").value || (mitreTactics[0] && mitreTactics[0].id);
+  if (!tid) return;
+  scPhases.push(phaseFromTactic(tid, true));
+  renderAllPhases();
+  banner($("sc-banner"), "ok", `Fase MITRE añadida: ${tid}`);
 });
 
 $("btn-save-scenario").addEventListener("click", async () => {
@@ -515,10 +816,9 @@ $("btn-save-scenario").addEventListener("click", async () => {
     });
     banner($("sc-banner"), "ok", `Guardado: ${res.path}`);
     await initRunTab();
-    const sel = $("sc-load");
-    const data = await api("/api/scenarios");
-    sel.innerHTML = data.scenarios.map((s) => `<option value="${s}">${s}</option>`).join("");
-    sel.value = res.name;
+    scLoadedId = res.name;
+    await refreshScenarioCatalog(res.name);
+    setScenarioMode("load");
   } catch (e) {
     banner($("sc-banner"), "live", "Error: " + e.message);
   }

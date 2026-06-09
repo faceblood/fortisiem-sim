@@ -180,11 +180,17 @@ def scenario_to_yaml(scenario: dict[str, Any], assets: dict[str, Any] | None = N
             if ev.get("overrides"):
                 item["overrides"] = ev["overrides"]
             events.append(item)
-        phases[name] = {
+        phase_doc: dict[str, Any] = {
             "description": ph.get("description", ""),
             "delay_before": float(ph.get("delay_before", 0)),
             "events": events,
         }
+        if ph.get("mitre_tactic"):
+            phase_doc["mitre"] = {
+                "tactic": ph["mitre_tactic"],
+                "techniques": ph.get("mitre_techniques") or [],
+            }
+        phases[name] = phase_doc
     doc["phases"] = phases
     return yaml.dump(doc, allow_unicode=True, sort_keys=False, default_flow_style=False)
 

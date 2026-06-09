@@ -98,11 +98,27 @@
 <section id="panel-scenario" class="panel">
   <div id="sc-banner"></div>
   <div class="card">
-    <div class="row">
-      <div><label>Cargar escenario</label><select id="sc-load"></select></div>
-      <div><button type="button" class="btn btn-ghost" id="btn-sc-load">Cargar</button></div>
-      <div><button type="button" class="btn btn-ghost" id="btn-sc-new">Nuevo</button></div>
+    <h2>Origen del escenario</h2>
+    <div class="mode-toggle">
+      <button type="button" id="sc-mode-new" class="active">Crear nuevo</button>
+      <button type="button" id="sc-mode-load">Cargar existente</button>
     </div>
+    <div id="sc-new-hint" class="meta">Plantilla vacía con una fase. Edita y guarda como YAML nuevo.</div>
+    <div id="sc-load-panel" style="display:none">
+      <label>Escenarios guardados en <code>scenarios/</code></label>
+      <div id="sc-scenario-list" class="scenario-list"></div>
+      <div class="row" style="margin-top:10px">
+        <div>
+          <label>O elegir del desplegable</label>
+          <select id="sc-load"></select>
+        </div>
+        <div style="flex:0">
+          <label>&nbsp;</label>
+          <button type="button" class="btn btn-ghost" id="btn-sc-reload">↻ Actualizar lista</button>
+        </div>
+      </div>
+    </div>
+    <div id="sc-preview" class="sc-preview" style="display:none"></div>
   </div>
   <div class="card">
     <h2>Metadatos</h2>
@@ -115,8 +131,31 @@
     <textarea id="sc-desc" rows="2"></textarea>
     <div class="check"><input type="checkbox" id="sc-use-config" checked><label for="sc-use-config">Usar actores desde Config (AD + hosts)</label></div>
   </div>
+  <details class="card" id="event-catalog-panel">
+    <summary>Catálogo de eventos (MITRE TTP) — <span id="catalog-count">0</span> plantillas</summary>
+    <p class="meta">Cada evento está asociado a tácticas y técnicas MITRE. En una fase con táctica elegida, solo verás los eventos compatibles.</p>
+    <div style="overflow:auto; max-height:280px">
+      <table class="list-table catalog-table">
+        <thead><tr><th>ID</th><th>Nombre</th><th>Tácticas</th><th>Técnicas</th></tr></thead>
+        <tbody id="event-catalog-body"></tbody>
+      </table>
+    </div>
+  </details>
   <div id="sc-phases"></div>
-  <button type="button" class="btn btn-ghost" id="btn-add-phase">+ Añadir fase</button>
+  <div class="row" style="margin-top:8px">
+    <div>
+      <label>Añadir fase MITRE ATT&CK</label>
+      <select id="sc-add-tactic"></select>
+    </div>
+    <div style="flex:0">
+      <label>&nbsp;</label>
+      <button type="button" class="btn btn-ghost" id="btn-add-phase-mitre">+ Fase MITRE</button>
+    </div>
+    <div style="flex:0">
+      <label>&nbsp;</label>
+      <button type="button" class="btn btn-ghost btn-sm" id="btn-add-phase">+ Fase libre</button>
+    </div>
+  </div>
   <div style="margin-top:16px">
     <button type="button" class="btn btn-success" id="btn-save-scenario">Guardar escenario YAML</button>
   </div>
