@@ -37,7 +37,6 @@ def test_scenario_to_yaml_with_config_actors():
             {
                 "name": "phase1",
                 "description": "test",
-                "delay_before": 0,
                 "events": [{"id": "login_failed", "count": 3, "actor": "firewall"}],
             }
         ],
@@ -48,7 +47,10 @@ def test_scenario_to_yaml_with_config_actors():
 
 
 @pytest.fixture
-def client():
+def client(tmp_path, monkeypatch):
+    db = tmp_path / "test.db"
+    monkeypatch.setenv("FORTISIEM_SIM_DB", str(db))
+    monkeypatch.setenv("FORTISIEM_SIM_STORAGE", "sql")
     app = create_app(ROOT / "templates" / "events.yaml")
     app.config["TESTING"] = True
     return app.test_client()
@@ -59,6 +61,7 @@ def test_api_config_get(client):
     assert r.status_code == 200
     data = r.get_json()
     assert "ad" in data
+    assert "c2" in data
     assert "actor_keys" in data
 
 
@@ -80,6 +83,29 @@ def test_api_events(client):
     assert len(data["catalog"]) == data["count"]
     assert "by_tactic" in data
     assert "login_failed" in data["by_tactic"]["TA0001"]
+    assert "system" in data["catalog"][0]
+
+
+def test_api_events_import(client, tmp_path, monkeypatch):
+    yaml_body = """
+events:
+  gui_test_evt:
+    name: GUI import test
+    format: syslog_generic
+    body: event=gui_test simulated=true
+    mitre:
+      tactics: [TA0001]
+      techniques: [T1078]
+"""
+    before = client.get("/api/events").get_json()["count"]
+    r = client.post("/api/events/import", data=yaml_body, content_type="text/yaml")
+    assert r.status_code == 200
+    data = r.get_json()
+    assert data["ok"] is True
+    assert "gui_test_evt" in data["added"]
+    assert data["count"] == before + 1
+    after = client.get("/api/events").get_json()
+    assert "gui_test_evt" in after["ids"]
 
 
 def test_api_scenarios_list_has_items(client):

@@ -2,6 +2,29 @@ from __future__ import annotations
 
 from typing import Any
 
+# Formato de plantilla → sistema origen mostrado en GUI / catálogo
+FORMAT_SYSTEM: dict[str, str] = {
+    "syslog_generic": "Genérico",
+    "fortigate": "FortiGate",
+    "linux_auth": "Linux",
+    "cef": "File audit (CEF)",
+    "fortiedr_cef": "FortiEDR",
+    "windows_security": "Windows",
+    "nginx_apache": "Web (Nginx/Apache)",
+    "esxi_vcenter": "VMware ESXi",
+    "docker": "Docker",
+    "ot_scada": "SCADA / OT",
+}
+
+
+def event_system_label(tmpl: Any) -> str:
+    """Etiqueta legible del sistema que genera el log (EDR, Windows, OT, …)."""
+    explicit = str(getattr(tmpl, "source_system", "") or "").strip()
+    if explicit:
+        return explicit
+    fmt = str(getattr(tmpl, "format", "") or "").strip()
+    return FORMAT_SYSTEM.get(fmt, fmt.replace("_", " ").title() if fmt else "—")
+
 # Tácticas MITRE ATT&CK Enterprise (orden kill-chain habitual en tabletop)
 MITRE_TACTICS: list[dict[str, Any]] = [
     {
@@ -215,24 +238,45 @@ def _sync_suggested_events_from_catalog() -> None:
         ][:6]
 
 
-def events_for_tactic(tactic_id: str) -> list[str]:
+def event_mitre_meta(event_id: str, tmpl: Any) -> dict[str, list[str]]:
+    if event_id in EVENT_MITRE:
+        return EVENT_MITRE[event_id]
+    tactics = list(getattr(tmpl, "mitre_tactics", []) or [])
+    techniques = list(getattr(tmpl, "mitre_techniques", []) or [])
+    if not tactics and not techniques:
+        for item in getattr(tmpl, "mitre", []) or []:
+            s = str(item).strip()
+            if s.upper().startswith("TA"):
+                tactics.append(s.upper())
+            elif s.upper().startswith("T"):
+                techniques.append(s)
+    return {"tactics": tactics, "techniques": techniques}
+
+
+def events_for_tactic(tactic_id: str, templates: dict[str, Any] | None = None) -> list[str]:
     tid = tactic_id.strip().upper()
-    return sorted(
+    found = {
         eid
         for eid, meta in EVENT_MITRE.items()
         if tid in meta.get("tactics", [])
-    )
+    }
+    if templates:
+        for eid, tmpl in templates.items():
+            if tid in (getattr(tmpl, "mitre_tactics", []) or []):
+                found.add(eid)
+    return sorted(found)
 
 
 def build_event_catalog(templates: dict[str, Any]) -> list[dict[str, Any]]:
     catalog: list[dict[str, Any]] = []
     for event_id in sorted(templates.keys()):
         tmpl = templates[event_id]
-        meta = EVENT_MITRE.get(event_id, {"tactics": [], "techniques": []})
+        meta = event_mitre_meta(event_id, tmpl)
         catalog.append({
             "id": event_id,
             "name": getattr(tmpl, "name", event_id),
             "format": getattr(tmpl, "format", ""),
+            "system": event_system_label(tmpl),
             "severity": getattr(tmpl, "severity", ""),
             "tactics": meta.get("tactics", []),
             "techniques": meta.get("techniques", []),

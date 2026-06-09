@@ -57,6 +57,12 @@ def test_build_event_catalog_and_index():
     assert len(catalog) == len(templates)
     assert "login_failed" in by_tactic["TA0001"]
     assert "login_failed" in by_tactic["TA0006"]
+    alarm = next(c for c in catalog if c["id"] == "alarm_suppressed")
+    assert alarm["system"] == "SCADA / OT"
+    edr = next(c for c in catalog if c["id"] == "credential_access_simulated")
+    assert edr["system"] == "FortiEDR"
+    win = next(c for c in catalog if c["id"] == "process_execution")
+    assert win["system"] == "Windows"
 
 
 def test_suggested_events_exist_in_templates():

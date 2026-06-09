@@ -24,6 +24,9 @@ class EventTemplate:
     severity: str
     body: str
     category: str = "generic"
+    source_system: str = ""
+    mitre_tactics: list[str] = field(default_factory=list)
+    mitre_techniques: list[str] = field(default_factory=list)
     syslog_hostname: str = "lab-host"
     pri: int = 134
     fields: list[str] = field(default_factory=list)
@@ -51,6 +54,10 @@ class ActorPools:
     src_ips: list[str] = field(default_factory=lambda: ["10.10.10.50"])
     reporting_ips: list[str] = field(default_factory=lambda: ["10.255.9.21"])
     domains: list[str] = field(default_factory=lambda: ["lab.local"])
+    c2_ips: list[str] = field(default_factory=list)
+    c2_uris: list[str] = field(default_factory=list)
+    c2_default_ip: str = "203.0.113.50"
+    c2_default_uri: str = "https://lab-c2.example/beacon"
 
 
 @dataclass

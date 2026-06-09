@@ -35,6 +35,23 @@ def test_render_placeholders():
     assert "simulated" in body
 
 
+def test_render_c2_from_config_pools():
+    from fortisiem_sim.assets import apply_config_c2_to_scenario, load_assets
+    from fortisiem_sim.loaders import load_scenario, load_templates
+    from fortisiem_sim.models import SendOptions
+    from fortisiem_sim.render import build_context, render_body
+
+    templates = load_templates(TEMPLATES)
+    scenario = load_scenario(SCENARIO)
+    apply_config_c2_to_scenario(scenario)
+    assets = load_assets(ROOT / "config" / "assets.yaml")
+    assert scenario.actors.pools.c2_ips
+    ctx = build_context(scenario, templates["outbound_connection"], SendOptions(), actor_name="attacker")
+    body = render_body(templates["outbound_connection"], ctx)
+    assert assets["c2"]["default_ip"] in body or ctx["dst_ip"] in body
+    assert "C2" in body or ctx["c2_host"] in body
+
+
 def test_wire_rfc3164_prefix():
     templates = load_templates(TEMPLATES)
     scenario = load_scenario(SCENARIO)

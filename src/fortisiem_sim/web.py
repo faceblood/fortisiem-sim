@@ -3,35 +3,42 @@ from __future__ import annotations
 import json
 from dataclasses import asdict
 from pathlib import Path
+from typing import Any
 
 import yaml
 
 from .assets import assets_to_actors, load_assets, save_assets, save_scenario_from_builder
+from .c2 import merge_c2_import, parse_c2_text
+from .db.connection import db_path
+from .loaders import package_root
 from .engine import iter_scenario_stream, run_scenario
 from .loaders import (
-    list_scenarios,
-    load_scenario,
-    load_templates,
-    resolve_scenario,
-    resolve_templates_path,
+    default_templates_path,
+    merge_custom_events_import,
+    parse_events_import,
 )
-from .mitre import (
-    build_event_catalog,
-    guess_tactic_from_phase,
-    index_events_by_tactic,
-    list_tactics,
-)
+from .mitre import build_event_catalog, index_events_by_tactic, list_tactics
 from .models import EmittedEvent, RunSummary, Scenario, SendOptions
+from .storage import (
+    enable_sql_storage,
+    list_scenario_refs,
+    load_all_event_templates,
+    load_scenario_data,
+    scenario_builder_data,
+    storage_label,
+)
 
 _STATIC = Path(__file__).resolve().parent / "static"
 
 
-def _parse_run_args(data: dict) -> tuple[Path, Scenario, SendOptions, str]:
+def _parse_run_args(data: dict) -> tuple[str, Scenario, SendOptions, str]:
+    from .storage import resolve_scenario_ref
+
     try:
-        scenario_path = resolve_scenario(str(data.get("scenario", "")))
+        scenario_id = resolve_scenario_ref(str(data.get("scenario", "")))
     except ValueError as exc:
         raise ValueError(str(exc)) from exc
-    scenario = load_scenario(scenario_path)
+    scenario = load_scenario_data(scenario_id)
     count = data.get("count")
     seed = data.get("seed")
     options = SendOptions(
@@ -42,7 +49,7 @@ def _parse_run_args(data: dict) -> tuple[Path, Scenario, SendOptions, str]:
         quiet=True,
     )
     phase = str(data.get("phase", ""))
-    return scenario_path, scenario, options, phase
+    return scenario_id, scenario, options, phase
 
 
 def _expected_events(scenario: Scenario, phase_filter: str, count_override: int | None) -> int:
@@ -60,8 +67,8 @@ def _summary_dict(summary: RunSummary) -> dict:
     return {"total": summary.total, "sent": summary.sent, "dry_run": summary.dry_run}
 
 
-def _scenario_payload(path: Path) -> dict:
-    sc = load_scenario(path)
+def _scenario_payload(scenario_id: str) -> dict:
+    sc = load_scenario_data(scenario_id)
     return {
         "name": sc.name,
         "description": sc.description,
@@ -80,12 +87,12 @@ def _scenario_payload(path: Path) -> dict:
 
 def _scenario_list_payload() -> list[dict]:
     items: list[dict] = []
-    for path in list_scenarios():
-        sc = load_scenario(path)
+    for scenario_id in list_scenario_refs():
+        sc = load_scenario_data(scenario_id)
         total_events = sum(sum(e.count for e in ph.events) for ph in sc.phases)
         items.append({
-            "id": path.stem,
-            "file": path.name,
+            "id": scenario_id,
+            "file": f"{scenario_id}.yml",
             "name": sc.name,
             "description": sc.description,
             "phases": len(sc.phases),
@@ -95,57 +102,26 @@ def _scenario_list_payload() -> list[dict]:
     return items
 
 
-def _scenario_builder_payload(path: Path) -> dict:
-    sc = load_scenario(path)
-    raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    phases_raw = raw.get("phases", {}) if isinstance(raw.get("phases"), dict) else {}
-    actor_keys = list(sc.actors.profiles.keys()) if sc.actors.profiles else []
-    phases_out = []
-    for ph in sc.phases:
-        raw_ph = phases_raw.get(ph.name, {}) if isinstance(phases_raw, dict) else {}
-        mitre_raw = raw_ph.get("mitre", {}) if isinstance(raw_ph, dict) else {}
-        mitre_tactic = str(mitre_raw.get("tactic", "")) if mitre_raw else ""
-        if not mitre_tactic:
-            mitre_tactic = guess_tactic_from_phase(ph.name, ph.description)
-        mitre_techniques = mitre_raw.get("techniques", []) if mitre_raw else []
-        phases_out.append({
-            "name": ph.name,
-            "description": ph.description,
-            "delay_before": ph.delay_before,
-            "mitre_tactic": mitre_tactic,
-            "mitre_techniques": mitre_techniques,
-            "events": [
-                {
-                    "id": e.id,
-                    "count": e.count,
-                    "actor": e.actor or "",
-                    "delay": e.delay,
-                    "jitter": e.jitter,
-                }
-                for e in ph.events
-            ],
-        })
-    return {
-        "id": path.stem,
-        "name": sc.name,
-        "description": sc.description,
-        "org_id": sc.org_id,
-        "timeline_minutes": sc.timeline_minutes,
-        "use_config_actors": False,
-        "actor_keys": actor_keys,
-        "phases": phases_out,
-    }
-
-
 def create_app(templates_path: Path | None = None):
     try:
         from flask import Flask, Response, jsonify, request, send_from_directory
     except ImportError as exc:
         raise RuntimeError("Flask no instalado. Ejecuta: pip install flask") from exc
 
+    enable_sql_storage(seed_from_yaml=True)
     app = Flask(__name__, static_folder=str(_STATIC), static_url_path="/static")
-    tpath = templates_path or resolve_templates_path(SendOptions())
-    templates = load_templates(tpath)
+    base_tpath = templates_path or default_templates_path()
+    catalog_state: dict[str, Any] = {
+        "base": base_tpath,
+        "templates": load_all_event_templates(base_tpath),
+    }
+
+    def _current_templates():
+        return catalog_state["templates"]
+
+    def _reload_templates():
+        catalog_state["templates"] = load_all_event_templates(catalog_state["base"])
+        return catalog_state["templates"]
 
     def _sse(payload: dict) -> str:
         return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
@@ -153,6 +129,19 @@ def create_app(templates_path: Path | None = None):
     @app.get("/")
     def index():
         return send_from_directory(_STATIC, "index.html")
+
+    @app.get("/api/storage")
+    def api_storage():
+        root = package_root()
+        db = db_path()
+        try:
+            rel = str(db.relative_to(root))
+        except ValueError:
+            rel = str(db)
+        return jsonify({
+            "backend": storage_label().lower(),
+            "db_path": rel,
+        })
 
     @app.get("/api/scenarios")
     def api_scenarios():
@@ -165,14 +154,14 @@ def create_app(templates_path: Path | None = None):
     @app.get("/api/scenarios/<name>")
     def api_scenario(name: str):
         try:
-            return jsonify(_scenario_payload(resolve_scenario(name)))
+            return jsonify(_scenario_payload(name))
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 404
 
     @app.get("/api/scenarios/<name>/builder")
     def api_scenario_builder(name: str):
         try:
-            return jsonify(_scenario_builder_payload(resolve_scenario(name)))
+            return jsonify(scenario_builder_data(name))
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 404
 
@@ -182,7 +171,12 @@ def create_app(templates_path: Path | None = None):
         try:
             assets = load_assets() if data.get("use_config_actors", True) else None
             path = save_scenario_from_builder(data, assets)
-            return jsonify({"ok": True, "name": path.stem, "path": str(path.relative_to(path.parent.parent))})
+            return jsonify({
+                "ok": True,
+                "name": path.stem,
+                "path": str(db_path()) if storage_label() == "SQLite" else str(path.relative_to(path.parent.parent)),
+                "storage": storage_label(),
+            })
         except (ValueError, KeyError, TypeError) as exc:
             return jsonify({"error": str(exc)}), 400
 
@@ -196,15 +190,64 @@ def create_app(templates_path: Path | None = None):
     def api_put_config():
         data = request.get_json(force=True) or {}
         try:
-            saved = save_assets(data)
-            assets = load_assets(saved)
+            save_assets(data)
+            assets = load_assets()
             actors = assets_to_actors(assets)
             return jsonify({**assets, "actor_keys": list(actors.get("profiles", {}).keys())})
         except (ValueError, TypeError) as exc:
             return jsonify({"error": str(exc)}), 400
 
+    @app.post("/api/config/c2/import")
+    def api_import_c2():
+        if request.files.get("file"):
+            text = request.files["file"].read().decode("utf-8", errors="replace")
+        else:
+            text = request.get_data(as_text=True) or ""
+        if not text.strip():
+            return jsonify({"error": "Fichero o cuerpo vacío"}), 400
+        try:
+            imported = parse_c2_text(text)
+            assets = load_assets()
+            assets["c2"] = merge_c2_import(assets.get("c2"), imported)
+            save_assets(assets)
+            assets = load_assets()
+            actors = assets_to_actors(assets)
+            return jsonify({
+                **assets,
+                "actor_keys": list(actors.get("profiles", {}).keys()),
+                "imported": imported,
+            })
+        except (ValueError, TypeError) as exc:
+            return jsonify({"error": str(exc)}), 400
+
+    @app.post("/api/events/import")
+    def api_import_events():
+        if request.files.get("file"):
+            text = request.files["file"].read().decode("utf-8", errors="replace")
+        else:
+            text = request.get_data(as_text=True) or ""
+        if not text.strip():
+            return jsonify({"error": "Fichero o cuerpo vacío"}), 400
+        try:
+            imported = parse_events_import(text)
+            added, updated = merge_custom_events_import(imported)
+            templates = _reload_templates()
+            catalog = build_event_catalog(templates)
+            return jsonify({
+                "ok": True,
+                "added": added,
+                "updated": updated,
+                "count": len(templates),
+                "ids": sorted(templates.keys()),
+                "catalog": catalog,
+                "by_tactic": index_events_by_tactic(catalog),
+            })
+        except (ValueError, TypeError, yaml.YAMLError) as exc:
+            return jsonify({"error": str(exc)}), 400
+
     @app.get("/api/events")
     def api_events():
+        templates = _current_templates()
         catalog = build_event_catalog(templates)
         return jsonify({
             "ids": sorted(templates.keys()),
@@ -219,7 +262,6 @@ def create_app(templates_path: Path | None = None):
 
     @app.get("/api/run/stream")
     def api_run_stream():
-        """SSE: eventos uno a uno con delays reales del escenario."""
         args = {
             "scenario": request.args.get("scenario", ""),
             "phase": request.args.get("phase", ""),
@@ -248,6 +290,7 @@ def create_app(templates_path: Path | None = None):
                 "expected": expected,
             })
             try:
+                templates = _current_templates()
                 for kind, payload in iter_scenario_stream(
                     scenario, templates, options, summary,
                     phase_filter=phase, no_delay=False,
@@ -274,7 +317,6 @@ def create_app(templates_path: Path | None = None):
 
     @app.post("/api/run")
     def api_run():
-        """Batch instantáneo (sin delays) — fallback si SSE desactivado."""
         data = request.get_json(force=True) or {}
         try:
             _, scenario, options, phase = _parse_run_args(data)
@@ -283,6 +325,7 @@ def create_app(templates_path: Path | None = None):
 
         collected: list[EmittedEvent] = []
         try:
+            templates = _current_templates()
             summary = run_scenario(
                 scenario, templates, options,
                 phase_filter=phase, no_delay=True, collect=collected,
@@ -303,5 +346,5 @@ def create_app(templates_path: Path | None = None):
 
 def serve(host: str = "127.0.0.1", port: int = 8800, templates_path: Path | None = None) -> None:
     app = create_app(templates_path)
-    print(f"FortiSIEM Sim web en http://{host}:{port}  (Ctrl+C para salir)")
+    print(f"FortiSIEM Sim web en http://{host}:{port}  (SQLite: {db_path()})")
     app.run(host=host, port=port, debug=False, threaded=True)

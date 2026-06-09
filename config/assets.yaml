@@ -73,3 +73,15 @@ pools:
     - 10.255.9.22
     - 192.0.2.10
     - 192.0.2.55
+
+# IOC C2 simulados (lab TEST-NET / dominios ficticios) — editable en GUI → Config → C2
+c2:
+  default_ip: 203.0.113.50
+  default_uri: https://lab-c2.example/beacon
+  ips:
+    - 203.0.113.50
+    - 203.0.113.66
+  uris:
+    - https://lab-c2.example/beacon
+    - https://malware-c2.example.com/gate
+    - http://198.51.100.99:8080/payload

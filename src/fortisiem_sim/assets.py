@@ -6,6 +6,9 @@ from typing import Any
 import yaml
 
 from .loaders import package_root
+from .c2 import DEFAULT_C2_IP, DEFAULT_C2_URI, merge_c2_import, normalize_c2, parse_c2_text
+from .mitre import tactic_by_id
+from .models import Scenario
 
 
 def default_assets_path() -> Path:
@@ -13,6 +16,10 @@ def default_assets_path() -> Path:
 
 
 def load_assets(path: Path | None = None) -> dict[str, Any]:
+    from .storage import load_assets_data, use_sql_storage
+
+    if use_sql_storage() and path is None:
+        return load_assets_data()
     assets_file = path or default_assets_path()
     if not assets_file.exists():
         return _empty_assets()
@@ -21,6 +28,11 @@ def load_assets(path: Path | None = None) -> dict[str, Any]:
 
 
 def save_assets(data: dict[str, Any], path: Path | None = None) -> Path:
+    from .storage import save_assets_data, use_sql_storage
+
+    if use_sql_storage() and path is None:
+        result = save_assets_data(data)
+        return result or default_assets_path()
     assets_file = path or default_assets_path()
     assets_file.parent.mkdir(parents=True, exist_ok=True)
     normalized = _normalize_assets(data)
@@ -38,12 +50,14 @@ def _empty_assets() -> dict[str, Any]:
         "windows_hosts": [],
         "linux_hosts": [],
         "pools": {"src_ips": [], "reporting_ips": []},
+        "c2": normalize_c2(None),
     }
 
 
 def _normalize_assets(data: dict[str, Any]) -> dict[str, Any]:
     ad = data.get("ad") or {}
     pools = data.get("pools") or {}
+    c2 = normalize_c2(data.get("c2"))
     return {
         "ad": {
             "primary_domain": str(ad.get("primary_domain", "lab.local")),
@@ -56,7 +70,12 @@ def _normalize_assets(data: dict[str, Any]) -> dict[str, Any]:
         "pools": {
             "src_ips": [str(x) for x in pools.get("src_ips", [])],
             "reporting_ips": [str(x) for x in pools.get("reporting_ips", [])],
+            "c2_ips": c2["ips"],
+            "c2_uris": c2["uris"],
+            "c2_default_ip": c2["default_ip"],
+            "c2_default_uri": c2["default_uri"],
         },
+        "c2": c2,
     }
 
 
@@ -94,6 +113,10 @@ def assets_to_actors(assets: dict[str, Any]) -> dict[str, Any]:
             "src_ip": fw["src_ip"],
             "reporting_ip": fw["reporting_ip"],
             "hostname": fw["devname"],
+            "extra": {
+                "devname": fw["devname"],
+                "serial": fw.get("serial", "FGT00000000"),
+            },
         }
 
     for i, host in enumerate(assets.get("windows_hosts", [])):
@@ -141,8 +164,22 @@ def assets_to_actors(assets: dict[str, Any]) -> dict[str, Any]:
             "hostnames": all_hostnames or ["ws-lab-01"],
             "src_ips": list(dict.fromkeys(all_src)),
             "reporting_ips": list(dict.fromkeys(all_rep)),
+            "c2_ips": assets.get("c2", {}).get("ips", [DEFAULT_C2_IP]),
+            "c2_uris": assets.get("c2", {}).get("uris", [DEFAULT_C2_URI]),
+            "c2_default_ip": assets.get("c2", {}).get("default_ip", DEFAULT_C2_IP),
+            "c2_default_uri": assets.get("c2", {}).get("default_uri", DEFAULT_C2_URI),
         },
     }
+
+
+def apply_config_c2_to_scenario(scenario: Scenario) -> None:
+    """Inyecta IOC C2 desde config/assets.yaml en los pools del escenario."""
+    c2 = normalize_c2(load_assets().get("c2"))
+    pools = scenario.actors.pools
+    pools.c2_ips = list(c2["ips"])
+    pools.c2_uris = list(c2["uris"])
+    pools.c2_default_ip = c2["default_ip"]
+    pools.c2_default_uri = c2["default_uri"]
 
 
 def scenario_to_yaml(scenario: dict[str, Any], assets: dict[str, Any] | None = None) -> str:
@@ -164,7 +201,8 @@ def scenario_to_yaml(scenario: dict[str, Any], assets: dict[str, Any] | None = N
 
     phases: dict[str, Any] = {}
     for ph in scenario.get("phases", []):
-        name = str(ph.get("name", "phase")).strip().replace(" ", "_")
+        tactic = tactic_by_id(str(ph.get("mitre_tactic", ""))) if ph.get("mitre_tactic") else None
+        name = tactic["slug"] if tactic else str(ph.get("name", "phase")).strip().replace(" ", "_")
         events = []
         for ev in ph.get("events", []):
             item: dict[str, Any] = {
@@ -173,16 +211,11 @@ def scenario_to_yaml(scenario: dict[str, Any], assets: dict[str, Any] | None = N
             }
             if ev.get("actor"):
                 item["actor"] = ev["actor"]
-            if ev.get("delay") is not None and ev.get("delay") != "":
-                item["delay"] = float(ev["delay"])
-            if ev.get("jitter") is not None and ev.get("jitter") != "":
-                item["jitter"] = float(ev["jitter"])
             if ev.get("overrides"):
                 item["overrides"] = ev["overrides"]
             events.append(item)
         phase_doc: dict[str, Any] = {
             "description": ph.get("description", ""),
-            "delay_before": float(ph.get("delay_before", 0)),
             "events": events,
         }
         if ph.get("mitre_tactic"):
@@ -196,10 +229,7 @@ def scenario_to_yaml(scenario: dict[str, Any], assets: dict[str, Any] | None = N
 
 
 def save_scenario_from_builder(scenario: dict[str, Any], assets: dict[str, Any] | None = None) -> Path:
-    name = str(scenario.get("name", "custom")).strip().replace(" ", "-").lower()
-    if not name:
-        raise ValueError("El escenario necesita un nombre")
-    path = package_root() / "scenarios" / f"{name}.yml"
-    yaml_text = scenario_to_yaml(scenario, assets)
-    path.write_text(yaml_text, encoding="utf-8")
-    return path
+    from .storage import save_scenario_data
+
+    ref = save_scenario_data(scenario, assets)
+    return package_root() / "scenarios" / f"{ref}.yml"

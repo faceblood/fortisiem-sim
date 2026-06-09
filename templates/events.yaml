@@ -1,4 +1,6 @@
 # FortiSIEM Lab — biblioteca de plantillas de eventos (simulación segura)
+# Los valores dinámicos vienen del actor/escenario ({{user}}, {{hostname}}, {{devname}}, …)
+# o de defaults/overrides por evento — evita hostnames/seriales fijos en el body.
 version: 2
 defaults:
   org_id: 1
@@ -10,7 +12,7 @@ events:
     name: Generic login success
     format: syslog_generic
     severity: info
-    syslog_hostname: auth-gateway
+    syslog_hostname: "{{hostname}}"
     fields: [src_ip, user, hostname, reporting_ip]
     fortisiem_hints:
       event_type: Generic-Login-Success
@@ -21,7 +23,7 @@ events:
     name: Generic login failed
     format: syslog_generic
     severity: warning
-    syslog_hostname: auth-gateway
+    syslog_hostname: "{{hostname}}"
     fields: [src_ip, user, hostname]
     fortisiem_hints:
       event_type: Generic-Login-Failed
@@ -32,16 +34,16 @@ events:
     name: VPN login from foreign country (simulated)
     format: fortigate
     severity: notice
-    syslog_hostname: FGT-LAB-01
+    syslog_hostname: "{{devname}}"
     pri: 189
-    fields: [src_ip, user, country, reporting_ip]
+    fields: [src_ip, user, country, reporting_ip, devname, devserial]
     fortisiem_hints:
       event_type: FortiGate-SSLVPN-Login
     defaults:
       country: RU
       vpn_type: ssl
     body: |
-      date={{date}} time={{time}} devname=FGT-LAB-01 devid=FGT60FTK23000001 logid=0101039944 type=event subtype=vpn level=notice vd=root user={{user}} srcip={{src_ip}} dstip={{dst_ip}} action=login status=success msg="SSL VPN login success (simulated tabletop)" country={{country}} reportingIp={{reporting_ip}} simulated=true
+      date={{date}} time={{time}} devname={{devname}} devid={{devserial}} logid=0101039944 type=event subtype=vpn level=notice vd=root user={{user}} srcip={{src_ip}} dstip={{reporting_ip}} action=login status=success msg="SSL VPN login success (simulated tabletop)" country={{country}} reportingIp={{reporting_ip}} simulated=true
 
   ssh_login:
     name: Linux SSH login
@@ -71,7 +73,7 @@ events:
     name: Sensitive file access (simulated)
     format: cef
     severity: medium
-    syslog_hostname: file-audit
+    syslog_hostname: "{{hostname}}"
     fields: [user, file_path, src_ip, hostname]
     fortisiem_hints:
       event_type: Generic-File-Access
@@ -84,7 +86,7 @@ events:
     name: Credential access (simulated, no real theft)
     format: fortiedr_cef
     severity: High
-    syslog_hostname: fortiedr-sensor
+    syslog_hostname: "{{hostname}}"
     fields: [user, hostname, process]
     fortisiem_hints:
       event_type: FortiEDR-Credential-Access-Simulated
@@ -143,18 +145,16 @@ events:
     name: Outbound connection to lab C2 IP (simulated)
     format: fortigate
     severity: notice
-    syslog_hostname: FGT-LAB-01
-    fields: [src_ip, dst_ip, reporting_ip]
-    defaults:
-      dst_ip: "203.0.113.50"
+    syslog_hostname: "{{devname}}"
+    fields: [src_ip, dst_ip, reporting_ip, devname, devserial, c2_uri, c2_host]
     body: |
-      date={{date}} time={{time}} devname=FGT-LAB-01 type=traffic subtype=forward level=notice srcip={{src_ip}} dstip={{dst_ip}} dstport=443 action=accept policyid=99 service=HTTPS msg="Simulated outbound HTTPS (tabletop)" reportingIp={{reporting_ip}} simulated=true
+      date={{date}} time={{time}} devname={{devname}} type=traffic subtype=forward level=notice srcip={{src_ip}} dstip={{dst_ip}} dstport={{dst_port}} action=accept policyid={{policyid}} service=HTTPS msg="Simulated outbound HTTPS to C2 {{c2_host}} (tabletop)" reportingIp={{reporting_ip}} simulated=true
 
   web_login:
     name: Web application login
     format: nginx_apache
     severity: info
-    syslog_hostname: web-app-01
+    syslog_hostname: "{{hostname}}"
     fields: [src_ip, user]
     body: |
       {{src_ip}} - {{user}} [{{timestamp}}] "POST /login HTTP/1.1" 200 512 "-" "Mozilla/5.0 (simulated)" # tabletop
@@ -163,18 +163,18 @@ events:
     name: Web file upload (simulated)
     format: nginx_apache
     severity: warning
-    syslog_hostname: web-app-01
-    fields: [src_ip, user, file_path]
+    syslog_hostname: "{{hostname}}"
+    fields: [src_ip, user, file_path, c2_uri]
     defaults:
       file_path: "resume-simulated.pdf"
     body: |
-      {{src_ip}} - {{user}} [{{timestamp}}] "POST /upload HTTP/1.1" 201 2048 "https://intranet.lab/" "curl/8.0 (simulated tabletop)"
+      {{src_ip}} - {{user}} [{{timestamp}}] "POST {{c2_uri}} HTTP/1.1" 201 2048 "https://intranet.{{domain}}/" "curl/8.0 (simulated exfil tabletop)"
 
   defacement_simulated:
     name: Website defacement (simulated message only)
     format: nginx_apache
     severity: critical
-    syslog_hostname: web-app-01
+    syslog_hostname: "{{hostname}}"
     pri: 130
     fields: [src_ip, hostname]
     body: |
@@ -185,17 +185,15 @@ events:
     format: windows_security
     severity: high
     syslog_hostname: "{{hostname}}"
-    fields: [user, src_ip, dst_ip, hostname]
-    defaults:
-      dst_ip: "10.10.20.15"
+    fields: [user, src_ip, lateral_dst, hostname]
     body: |
-      Microsoft-Windows-TerminalServices-RemoteConnectionManager: EventID=1149 User={{user}} SourceIP={{src_ip}} DestinationIP={{dst_ip}} Host={{hostname}} Simulation=true
+      Microsoft-Windows-TerminalServices-RemoteConnectionManager: EventID=1149 User={{user}} SourceIP={{src_ip}} DestinationIP={{lateral_dst}} Host={{hostname}} Simulation=true
 
   new_user_created:
     name: New AD user created (simulated)
     format: windows_security
     severity: notice
-    syslog_hostname: dc-lab-01
+    syslog_hostname: "{{hostname}}"
     fields: [user, domain]
     defaults:
       new_user: "svc-tabletop-sim"
@@ -206,7 +204,7 @@ events:
     name: Privilege / group change (simulated)
     format: windows_security
     severity: warning
-    syslog_hostname: dc-lab-01
+    syslog_hostname: "{{hostname}}"
     fields: [user, domain]
     defaults:
       group: "Domain Admins (simulated tabletop)"
@@ -217,7 +215,7 @@ events:
     name: Backup repository access (simulated)
     format: syslog_generic
     severity: notice
-    syslog_hostname: backup-srv
+    syslog_hostname: "{{hostname}}"
     fields: [user, file_path, src_ip]
     defaults:
       file_path: "/backup/repo-simulated/"
@@ -228,18 +226,16 @@ events:
     name: ESXi/vCenter login (simulated)
     format: esxi_vcenter
     severity: info
-    syslog_hostname: vcenter-lab
-    fields: [user, src_ip, reporting_ip]
-    defaults:
-      vc_user: "administrator@vsphere.local"
+    syslog_hostname: "{{hostname}}"
+    fields: [user, src_ip, reporting_ip, domain]
     body: |
-      [{{timestamp}}] [{{reporting_ip}}] User {{vc_user}}@vsphere.local logged in from {{src_ip}} (simulated tabletop orgId={{org_id}})
+      [{{timestamp}}] [{{reporting_ip}}] User {{user}}@{{domain}} logged in from {{src_ip}} (simulated tabletop orgId={{org_id}})
 
   container_exec:
     name: Docker exec (simulated)
     format: docker
     severity: warning
-    syslog_hostname: docker-host-01
+    syslog_hostname: "{{hostname}}"
     fields: [user, command, hostname]
     defaults:
       container: "app-simulated-01"
@@ -251,7 +247,7 @@ events:
     name: OT telemetry delay (simulated)
     format: ot_scada
     severity: warning
-    syslog_hostname: scada-gw
+    syslog_hostname: "{{hostname}}"
     fields: [device_id, hostname]
     defaults:
       tag: "PLC1.Temperature"
@@ -262,7 +258,7 @@ events:
     name: SCADA alarm suppressed (simulated)
     format: ot_scada
     severity: critical
-    syslog_hostname: scada-gw
+    syslog_hostname: "{{hostname}}"
     pri: 130
     fields: [user, device_id]
     body: |
@@ -272,7 +268,7 @@ events:
     name: System degraded mode (simulated)
     format: ot_scada
     severity: warning
-    syslog_hostname: scada-gw
+    syslog_hostname: "{{hostname}}"
     fields: [hostname, device_id]
     body: |
       [OT-SIM] device={{device_id}} state=DEGRADED host={{hostname}} msg="Simulated degraded operation for crisis drill" simulated=true

@@ -1,0 +1,29 @@
+# Ejemplo — importar desde GUI (Escenario → Catálogo) o copiar a custom-events.yaml
+version: 2
+events:
+  phishing_link_simulated:
+    name: Phishing link clicked (simulated)
+    format: syslog_generic
+    severity: warning
+    syslog_hostname: "{{hostname}}"
+    fields: [user, src_ip, hostname]
+    mitre:
+      tactics: [TA0001]
+      techniques: [T1566]
+    body: |
+      orgId={{org_id}} event=phishing_click user={{user}} src={{src_ip}} host={{hostname}} simulated=true
+
+  edr_malware_blocked:
+    name: EDR malware blocked (simulated)
+    format: fortiedr_cef
+    severity: High
+    syslog_hostname: "{{hostname}}"
+    source_system: FortiEDR
+    fields: [user, hostname, process]
+    mitre:
+      tactics: [TA0002]
+      techniques: [T1204]
+    defaults:
+      process: "simulated-dropper.exe"
+    body: |
+      CEF:0|Fortinet|FortiEDR|7.0|MalwareBlocked|High|suser={{user}} shost={{hostname}} fname={{process}} msg=Simulated malware block cs1Label=simulated cs1=true

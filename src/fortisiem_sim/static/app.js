@@ -260,6 +260,11 @@ function fillConfigUI(data) {
   renderUserChips(ad.users || []);
   $("cfg-src-ips").value = arrToLines(data.pools?.src_ips);
   $("cfg-reporting-ips").value = arrToLines(data.pools?.reporting_ips);
+  const c2 = data.c2 || {};
+  $("cfg-c2-default-ip").value = c2.default_ip || "";
+  $("cfg-c2-default-uri").value = c2.default_uri || "";
+  $("cfg-c2-ips").value = arrToLines(c2.ips);
+  $("cfg-c2-uris").value = arrToLines(c2.uris);
 
   const fwBody = $("cfg-firewalls");
   fwBody.innerHTML = "";
@@ -300,6 +305,12 @@ function collectConfig() {
     firewalls: readHostTable("cfg-firewalls", true),
     windows_hosts: readHostTable("cfg-windows"),
     linux_hosts: readHostTable("cfg-linux"),
+    c2: {
+      default_ip: $("cfg-c2-default-ip").value.trim() || "203.0.113.50",
+      default_uri: $("cfg-c2-default-uri").value.trim() || "https://lab-c2.example/beacon",
+      ips: linesToArr($("cfg-c2-ips")),
+      uris: linesToArr($("cfg-c2-uris")),
+    },
     pools: {
       src_ips: linesToArr($("cfg-src-ips")),
       reporting_ips: linesToArr($("cfg-reporting-ips")),
@@ -343,9 +354,31 @@ $("btn-save-config").addEventListener("click", async () => {
       body: JSON.stringify(collectConfig()),
     });
     fillConfigUI(res);
-    banner($("config-banner"), "ok", "Config guardada en assets.yaml");
+    banner($("config-banner"), "ok", "Config guardada (SQLite)");
   } catch (e) {
     banner($("config-banner"), "live", "Error: " + e.message);
+  }
+});
+
+$("btn-c2-import").addEventListener("click", async () => {
+  const input = $("cfg-c2-file");
+  const file = input.files && input.files[0];
+  if (!file) {
+    banner($("config-banner"), "dry", "Elige un fichero .txt con IOCs (una por línea).");
+    return;
+  }
+  try {
+    const text = await file.text();
+    const res = await api("/api/config/c2/import", {
+      method: "POST",
+      headers: { "Content-Type": "text/plain" },
+      body: text,
+    });
+    fillConfigUI(res);
+    banner($("config-banner"), "ok", `IOCs importados desde ${file.name} y guardados.`);
+    input.value = "";
+  } catch (e) {
+    banner($("config-banner"), "live", "Error importando: " + e.message);
   }
 });
 
@@ -357,15 +390,55 @@ let scLoadedId = null;
 let mitreTactics = [];
 
 function mitreOptions(selected) {
-  const opts =
-    '<option value="">— personalizada / sin táctica —</option>' +
-    mitreTactics
-      .map(
-        (t) =>
-          `<option value="${esc(t.id)}"${t.id === selected ? " selected" : ""}>${esc(t.id)} · ${esc(t.name)}</option>`
-      )
-      .join("");
-  return opts;
+  return mitreTactics
+    .map(
+      (t) =>
+        `<option value="${esc(t.id)}"${t.id === selected ? " selected" : ""}>${esc(t.id)} · ${esc(t.name)}</option>`
+    )
+    .join("");
+}
+
+function normalizeScenarioEvent(ev) {
+  return {
+    id: ev.id,
+    count: ev.count ?? 1,
+    actor: ev.actor || "",
+  };
+}
+
+function phaseSlugFromTacticId(tacticId) {
+  const tactic = getTacticById(tacticId);
+  return tactic ? tactic.slug : "";
+}
+
+const _PHASE_SLUG_ALIASES = {
+  recon_and_access: "initial_access",
+  staging_and_exfil: "collection",
+  impact_identity: "impact",
+  ot_and_crisis: "impact",
+  ot_crisis: "impact",
+};
+
+function syncPhaseWithMitre(ph) {
+  let tid = ph.mitre_tactic || "";
+  if (!tid && ph.name) {
+    const bySlug = mitreTactics.find((t) => t.slug === ph.name);
+    if (bySlug) tid = bySlug.id;
+    else if (_PHASE_SLUG_ALIASES[ph.name]) {
+      const t = mitreTactics.find((x) => x.slug === _PHASE_SLUG_ALIASES[ph.name]);
+      if (t) tid = t.id;
+    }
+  }
+  if (tid) {
+    const tactic = getTacticById(tid);
+    if (tactic) {
+      ph.mitre_tactic = tactic.id;
+      ph.name = tactic.slug;
+      ph.mitre_techniques = ph.mitre_techniques?.length ? ph.mitre_techniques : tactic.techniques || [];
+      if (!ph.description) ph.description = tactic.description;
+    }
+  }
+  return ph;
 }
 
 function fillMitreAddSelect() {
@@ -384,30 +457,32 @@ function applyMitreToPhaseBlock(block, tacticId, replaceEvents) {
   const tactic = getTacticById(tacticId);
   if (!tactic) return;
   block.querySelector(".ph-mitre").value = tactic.id;
-  block.querySelector(".ph-name").value = tactic.slug;
   block.querySelector(".ph-desc").value = tactic.description;
   const badge = block.querySelector(".mitre-badge");
-  if (badge) badge.textContent = `${tactic.id} · ${tactic.name} · ${(tactic.techniques || []).join(", ")}`;
+  if (badge) {
+    badge.textContent = `${tactic.slug} · ${tactic.id} · ${tactic.name} · ${(tactic.techniques || []).join(", ")}`;
+  }
   if (replaceEvents && tactic.suggested_events?.length) {
     const wrap = block.querySelector(".events-wrap");
     wrap.innerHTML = "";
-    tactic.suggested_events.forEach((ev) => wrap.appendChild(renderEventRow({ ...ev, actor: "" }, block)));
+    tactic.suggested_events.forEach((ev) =>
+      wrap.appendChild(renderEventRow(normalizeScenarioEvent({ ...ev, actor: "" }), block))
+    );
   }
   refreshPhaseEventSelects(block);
 }
 
 function phaseFromTactic(tacticId, withEvents) {
   const tactic = getTacticById(tacticId);
-  if (!tactic) return { name: "fase", description: "", delay_before: 0, events: [] };
+  if (!tactic) return { name: "fase", description: "", events: [] };
   return {
     name: tactic.slug,
     description: tactic.description,
-    delay_before: 0,
     mitre_tactic: tactic.id,
     mitre_techniques: tactic.techniques || [],
     events: withEvents
-      ? (tactic.suggested_events || []).map((ev) => ({ ...ev, actor: "" }))
-      : [{ id: firstAllowedEventId(tactic.id) || "login_failed", count: 1, actor: "", delay: 0.5, jitter: 0.2 }],
+      ? (tactic.suggested_events || []).map((ev) => normalizeScenarioEvent({ ...ev, actor: "" }))
+      : [normalizeScenarioEvent({ id: firstAllowedEventId(tactic.id) || "login_failed", count: 1, actor: "" })],
   };
 }
 
@@ -511,8 +586,9 @@ function eventOptions(selected, tacticId) {
   return ids
     .map((id) => {
       const entry = getCatalogEntry(id);
+      const sys = entry?.system ? `${entry.system} · ` : "";
       const ttp = entry ? entry.techniques.join(", ") : "";
-      const label = ttp ? `${id} (${ttp})` : id;
+      const label = ttp ? `${sys}${id} (${ttp})` : sys ? `${sys}${id}` : id;
       return `<option value="${esc(id)}"${id === selected ? " selected" : ""}>${esc(label)}</option>`;
     })
     .join("");
@@ -554,8 +630,20 @@ function updateEventRowTtp(row, eventId) {
   if (!el) return;
   const entry = getCatalogEntry(eventId);
   el.textContent = entry
-    ? `${entry.tactics.join(" · ")} — ${entry.techniques.join(", ")}`
+    ? `${entry.system} · ${entry.tactics.join(" · ")} — ${entry.techniques.join(", ")}`
     : "";
+}
+
+function applyEventCatalog(events) {
+  state.eventIds = events.ids || [];
+  state.eventCatalog = events.catalog || [];
+  state.eventsByTactic = events.by_tactic || {};
+  renderEventCatalogTable();
+  document.querySelectorAll(".phase-block").forEach((block) => refreshPhaseEventSelects(block));
+}
+
+async function refreshEventCatalog() {
+  return applyEventCatalog(await api("/api/events"));
 }
 
 function renderEventCatalogTable() {
@@ -569,6 +657,7 @@ function renderEventCatalogTable() {
     <tr>
       <td><code>${esc(e.id)}</code></td>
       <td>${esc(e.name)}</td>
+      <td><span class="pill pill-system">${esc(e.system || "—")}</span></td>
       <td>${(e.tactics || []).map((t) => `<span class="pill">${esc(t)}</span>`).join(" ")}</td>
       <td><span class="meta">${esc((e.techniques || []).join(", "))}</span></td>
     </tr>`
@@ -578,24 +667,23 @@ function renderEventCatalogTable() {
 
 function renderPhaseBlock(ph, pi) {
   const tactic = ph.mitre_tactic ? getTacticById(ph.mitre_tactic) : null;
-  const badgeText = tactic
-    ? `${tactic.id} · ${tactic.name} · ${(tactic.techniques || ph.mitre_techniques || []).join(", ")}`
-    : ph.mitre_tactic
-      ? ph.mitre_tactic
-      : "Sin táctica MITRE";
+  const synced = syncPhaseWithMitre({ ...ph });
+  const showTactic = tactic || getTacticById(synced.mitre_tactic);
+  const badgeText = showTactic
+    ? `${showTactic.slug} · ${showTactic.id} · ${showTactic.name} · ${(showTactic.techniques || synced.mitre_techniques || []).join(", ")}`
+    : "Elige una táctica MITRE ATT&CK";
+  const mitreVal = synced.mitre_tactic || mitreTactics[0]?.id || "";
   const div = document.createElement("div");
   div.className = "phase-block";
   div.dataset.pi = pi;
   div.innerHTML = `
     <div class="mitre-badge">${esc(badgeText)}</div>
     <div class="row">
-      <div><label>Táctica MITRE ATT&CK</label><select class="ph-mitre">${mitreOptions(ph.mitre_tactic || "")}</select></div>
-      <div><label>Clave fase (YAML)</label><input class="ph-name" value="${esc(ph.name)}"></div>
-      <div><label>delay_before (s)</label><input class="ph-delay" type="number" step="0.1" value="${ph.delay_before ?? 0}"></div>
+      <div><label>Táctica MITRE ATT&CK (nombre de fase en YAML)</label><select class="ph-mitre">${mitreOptions(mitreVal)}</select></div>
       <div style="flex:0"><label>&nbsp;</label><button type="button" class="btn btn-danger btn-sm rm-phase">Eliminar</button></div>
     </div>
     <label>Descripción (TTP)</label>
-    <input class="ph-desc" value="${esc(ph.description || "")}">
+    <input class="ph-desc" value="${esc(synced.description || "")}">
     <div class="row" style="margin:6px 0">
       <button type="button" class="btn btn-ghost btn-sm ph-apply-events">Aplicar eventos sugeridos MITRE</button>
     </div>
@@ -604,14 +692,12 @@ function renderPhaseBlock(ph, pi) {
     <button type="button" class="btn btn-ghost btn-sm add-event" disabled>+ Evento (MITRE)</button>`;
 
   const wrap = div.querySelector(".events-wrap");
-  (ph.events || []).forEach((ev) => wrap.appendChild(renderEventRow(ev, div)));
+  (synced.events || ph.events || []).forEach((ev) =>
+    wrap.appendChild(renderEventRow(normalizeScenarioEvent(ev), div))
+  );
 
   div.querySelector(".ph-mitre").addEventListener("change", (e) => {
-    if (e.target.value) applyMitreToPhaseBlock(div, e.target.value, false);
-    else {
-      div.querySelector(".mitre-badge").textContent = "Sin táctica MITRE";
-      refreshPhaseEventSelects(div);
-    }
+    applyMitreToPhaseBlock(div, e.target.value, false);
   });
   div.querySelector(".ph-apply-events").addEventListener("click", () => {
     const tid = div.querySelector(".ph-mitre").value;
@@ -619,14 +705,12 @@ function renderPhaseBlock(ph, pi) {
   });
   div.querySelector(".add-event").addEventListener("click", () => {
     const tid = div.querySelector(".ph-mitre").value;
-    const ev = {
-      id: firstAllowedEventId(tid) || "",
-      count: 1,
-      actor: "",
-      delay: 0.5,
-      jitter: 0.2,
-    };
-    wrap.appendChild(renderEventRow(ev, div));
+    wrap.appendChild(
+      renderEventRow(
+        normalizeScenarioEvent({ id: firstAllowedEventId(tid) || "", count: 1, actor: "" }),
+        div
+      )
+    );
   });
   div.querySelector(".rm-phase").addEventListener("click", () => {
     scPhases.splice(pi, 1);
@@ -643,8 +727,6 @@ function renderEventRow(ev, block) {
   row.innerHTML = `
     <div><label>event id</label><select class="ev-id">${eventOptions(ev.id, tid)}</select><div class="ev-ttp"></div></div>
     <div><label>count</label><input class="ev-count" type="number" min="1" value="${ev.count ?? 1}"></div>
-    <div><label>delay</label><input class="ev-delay" type="number" step="0.1" value="${ev.delay ?? ""}"></div>
-    <div><label>jitter</label><input class="ev-jitter" type="number" step="0.1" value="${ev.jitter ?? ""}"></div>
     <div><label>actor</label><select class="ev-actor">${actorOptions(ev.actor)}</select></div>
     <div><label>&nbsp;</label><button type="button" class="btn btn-ghost btn-sm rm-ev">×</button></div>`;
   row.querySelector(".ev-id").addEventListener("change", (e) => updateEventRowTtp(row, e.target.value));
@@ -664,18 +746,17 @@ function readPhasesFromUI() {
   $("sc-phases").querySelectorAll(".phase-block").forEach((block) => {
     const events = [];
     block.querySelectorAll(".event-row").forEach((row) => {
-      events.push({
-        id: row.querySelector(".ev-id").value,
-        count: +row.querySelector(".ev-count").value || 1,
-        actor: row.querySelector(".ev-actor").value,
-        delay: row.querySelector(".ev-delay").value,
-        jitter: row.querySelector(".ev-jitter").value,
-      });
+      events.push(
+        normalizeScenarioEvent({
+          id: row.querySelector(".ev-id").value,
+          count: +row.querySelector(".ev-count").value || 1,
+          actor: row.querySelector(".ev-actor").value,
+        })
+      );
     });
     phases.push({
-      name: block.querySelector(".ph-name").value.trim() || "phase",
+      name: phaseSlugFromTacticId(block.querySelector(".ph-mitre").value) || "phase",
       description: block.querySelector(".ph-desc").value.trim(),
-      delay_before: +block.querySelector(".ph-delay").value || 0,
       mitre_tactic: block.querySelector(".ph-mitre").value,
       mitre_techniques: (getTacticById(block.querySelector(".ph-mitre").value)?.techniques) || [],
       events,
@@ -687,10 +768,7 @@ function readPhasesFromUI() {
 async function initScenarioTab() {
   try {
     const [events, mitre] = await Promise.all([api("/api/events"), api("/api/mitre/tactics")]);
-    state.eventIds = events.ids || [];
-    state.eventCatalog = events.catalog || [];
-    state.eventsByTactic = events.by_tactic || {};
-    renderEventCatalogTable();
+    applyEventCatalog(events);
     mitreTactics = mitre.tactics || [];
     fillMitreAddSelect();
     if (!state.configLoaded) await loadConfig();
@@ -742,7 +820,11 @@ async function loadScenarioBuilder(nameOrId) {
     $("sc-use-config").checked = !!sc.use_config_actors;
     if (sc.actor_keys?.length) state.actorKeys = sc.actor_keys;
     else if (!sc.use_config_actors && state.config?.actor_keys) state.actorKeys = state.config.actor_keys;
-    scPhases = sc.phases || [];
+    scPhases = (sc.phases || []).map((p) => {
+      const synced = syncPhaseWithMitre({ ...p });
+      synced.events = (synced.events || []).map(normalizeScenarioEvent);
+      return synced;
+    });
     renderAllPhases();
     const item = scItems.find((it) => it.id === scLoadedId) || {
       id: scLoadedId,
@@ -782,21 +864,12 @@ $("btn-sc-reload").addEventListener("click", async () => {
     banner($("sc-banner"), "live", "Error: " + e.message);
   }
 });
-$("btn-add-phase").addEventListener("click", () => {
-  scPhases.push({
-    name: "fase_" + (scPhases.length + 1),
-    description: "",
-    delay_before: 0,
-    events: [{ id: state.eventIds[0] || "login_failed", count: 1, actor: "", delay: 0.5, jitter: 0.2 }],
-  });
-  renderAllPhases();
-});
 $("btn-add-phase-mitre").addEventListener("click", () => {
   const tid = $("sc-add-tactic").value || (mitreTactics[0] && mitreTactics[0].id);
   if (!tid) return;
   scPhases.push(phaseFromTactic(tid, true));
   renderAllPhases();
-  banner($("sc-banner"), "ok", `Fase MITRE añadida: ${tid}`);
+  banner($("sc-banner"), "ok", `Fase añadida: ${phaseSlugFromTacticId(tid)}`);
 });
 
 $("btn-save-scenario").addEventListener("click", async () => {
@@ -821,6 +894,35 @@ $("btn-save-scenario").addEventListener("click", async () => {
     setScenarioMode("load");
   } catch (e) {
     banner($("sc-banner"), "live", "Error: " + e.message);
+  }
+});
+
+$("btn-catalog-import").addEventListener("click", async () => {
+  const input = $("catalog-events-file");
+  const file = input.files && input.files[0];
+  if (!file) {
+    banner($("catalog-banner"), "dry", "Elige un fichero .yaml con sección events:.");
+    return;
+  }
+  try {
+    const text = await file.text();
+    const res = await api("/api/events/import", {
+      method: "POST",
+      headers: { "Content-Type": "text/yaml" },
+      body: text,
+    });
+    applyEventCatalog(res);
+    const parts = [];
+    if (res.added?.length) parts.push(`${res.added.length} nuevos`);
+    if (res.updated?.length) parts.push(`${res.updated.length} actualizados`);
+    banner(
+      $("catalog-banner"),
+      "ok",
+      `Importado desde ${file.name}: ${parts.join(", ") || "sin cambios"}. Catálogo: ${res.count} eventos.`
+    );
+    input.value = "";
+  } catch (e) {
+    banner($("catalog-banner"), "live", "Error importando: " + e.message);
   }
 });
 

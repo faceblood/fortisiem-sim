@@ -1,0 +1,6 @@
+# IOC C2 simulados — una entrada por línea (lab / TEST-NET)
+# Líneas con # son comentarios
+
+203.0.113.88
+https://sim-c2.lab.local/beacon
+malware-tabletop.example.org/gate.php

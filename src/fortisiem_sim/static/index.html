@@ -66,6 +66,28 @@
         <div class="chips" id="cfg-users"></div>
       </div>
       <div class="card">
+        <h2>C2 / IOC (simulado)</h2>
+        <p class="meta">IPs y URIs de comando/exfil. Si la lista está vacía se usan los defaults (TEST-NET).</p>
+        <div class="row">
+          <div><label>IP C2 por defecto</label><input id="cfg-c2-default-ip" placeholder="203.0.113.50"></div>
+          <div><label>URI C2 por defecto</label><input id="cfg-c2-default-uri" placeholder="https://lab-c2.example/beacon"></div>
+        </div>
+        <label>IPs C2 (una por línea)</label>
+        <textarea id="cfg-c2-ips" rows="3" placeholder="203.0.113.50&#10;203.0.113.66"></textarea>
+        <label>URIs C2 — IOC HTTP(S) (una por línea)</label>
+        <textarea id="cfg-c2-uris" rows="4" placeholder="https://malware-c2.example.com/gate"></textarea>
+        <div class="row" style="margin-top:8px">
+          <div>
+            <label>Importar fichero .txt (una IOC por línea)</label>
+            <input type="file" id="cfg-c2-file" accept=".txt,text/plain">
+          </div>
+          <div style="flex:0">
+            <label>&nbsp;</label>
+            <button type="button" class="btn btn-ghost btn-sm" id="btn-c2-import">Importar IOCs</button>
+          </div>
+        </div>
+      </div>
+      <div class="card">
         <h2>Pools IP</h2>
         <label>src_ips (una por línea)</label>
         <textarea id="cfg-src-ips" rows="4"></textarea>
@@ -134,9 +156,21 @@
   <details class="card" id="event-catalog-panel">
     <summary>Catálogo de eventos (MITRE TTP) — <span id="catalog-count">0</span> plantillas</summary>
     <p class="meta">Cada evento está asociado a tácticas y técnicas MITRE. En una fase con táctica elegida, solo verás los eventos compatibles.</p>
+    <div class="row" style="margin:8px 0; align-items:flex-end">
+      <div style="flex:1">
+        <label>Importar eventos (YAML)</label>
+        <input type="file" id="catalog-events-file" accept=".yaml,.yml,text/yaml,application/x-yaml">
+      </div>
+      <div style="flex:0">
+        <label>&nbsp;</label>
+        <button type="button" class="btn btn-ghost btn-sm" id="btn-catalog-import">Importar al catálogo</button>
+      </div>
+    </div>
+    <p class="meta">Se guardan en SQLite (<code>config/fortisiem.db</code>). Incluye <code>mitre.tactics</code> / <code>mitre.techniques</code> para filtrar por fase.</p>
+    <div id="catalog-banner" class="banner dry" style="display:none"></div>
     <div style="overflow:auto; max-height:280px">
       <table class="list-table catalog-table">
-        <thead><tr><th>ID</th><th>Nombre</th><th>Tácticas</th><th>Técnicas</th></tr></thead>
+        <thead><tr><th>ID</th><th>Nombre</th><th>Sistema</th><th>Tácticas</th><th>Técnicas</th></tr></thead>
         <tbody id="event-catalog-body"></tbody>
       </table>
     </div>
@@ -149,11 +183,7 @@
     </div>
     <div style="flex:0">
       <label>&nbsp;</label>
-      <button type="button" class="btn btn-ghost" id="btn-add-phase-mitre">+ Fase MITRE</button>
-    </div>
-    <div style="flex:0">
-      <label>&nbsp;</label>
-      <button type="button" class="btn btn-ghost btn-sm" id="btn-add-phase">+ Fase libre</button>
+      <button type="button" class="btn btn-ghost" id="btn-add-phase-mitre">+ Añadir fase</button>
     </div>
   </div>
   <div style="margin-top:16px">

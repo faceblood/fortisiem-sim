@@ -4,6 +4,7 @@ import random
 import re
 from datetime import datetime, timedelta
 
+from .c2 import c2_host_from_uri
 from .models import ActorProfile, EventTemplate, Scenario, SendOptions
 
 _PLACEHOLDER = re.compile(r"\{\{(\w+)\}\}")
@@ -23,6 +24,17 @@ SUPPORTED_FORMATS: dict[str, str] = {
 }
 
 _PASSTHROUGH = {"nginx_apache", "docker", "ot_scada", "crisis_comms"}
+
+
+def _substitute(template: str, ctx: dict[str, str]) -> str:
+    return _PLACEHOLDER.sub(lambda m: ctx.get(m.group(1), m.group(0)), template)
+
+
+def _resolve_syslog_hostname(template: EventTemplate, ctx: dict[str, str]) -> str:
+    raw = template.syslog_hostname.strip()
+    if "{{" in raw:
+        return _substitute(raw, ctx)
+    return raw or ctx.get("hostname", "lab-host")
 
 
 def _pick(pool: list[str], fallback: str) -> str:
@@ -72,6 +84,10 @@ def build_context(
     if options.randomize_reporting_ip:
         reporting_ip = _pick(pools.reporting_ips, reporting_ip)
 
+    c2_ip = _pick(pools.c2_ips, pools.c2_default_ip or "203.0.113.50")
+    c2_uri = _pick(pools.c2_uris, pools.c2_default_uri or "https://lab-c2.example/beacon")
+    lateral_dst = _pick(pools.src_ips, profile.src_ip)
+
     ctx: dict[str, str] = {
         "timestamp": now.isoformat(timespec="seconds"),
         "date": now.strftime("%Y-%m-%d"),
@@ -80,7 +96,10 @@ def build_context(
         "syslog_ts": now.strftime("%b %d %H:%M:%S"),
         "src_ip": src_ip,
         "reporting_ip": reporting_ip,
-        "dst_ip": "10.255.9.3",
+        "dst_ip": c2_ip,
+        "c2_uri": c2_uri,
+        "c2_host": c2_host_from_uri(c2_uri),
+        "lateral_dst": lateral_dst,
         "hostname": hostname,
         "user": user,
         "domain": domain,
@@ -91,8 +110,12 @@ def build_context(
         "process": "simulated-process",
         "command": "echo simulated-lab-only",
         "file_path": "/var/log/simulated.log",
-        "device_id": "LAB-DEVICE-001",
+        "device_id": profile.extra.get("device_id", profile.hostname),
         "serial": "SIM0000001",
+        "devname": profile.hostname,
+        "devserial": profile.extra.get("serial", "SIM0000001"),
+        "policyid": "99",
+        "dst_port": "443",
         "simulation_marker": options.simulation_marker,
     }
     # defaults de plantilla + extra de actor + overrides del evento (en este orden de prioridad)
@@ -103,7 +126,7 @@ def build_context(
 
 
 def render_body(template: EventTemplate, ctx: dict[str, str]) -> str:
-    body = _PLACEHOLDER.sub(lambda m: ctx.get(m.group(1), m.group(0)), template.body)
+    body = _substitute(template.body, ctx)
     marker = ctx.get("simulation_marker", "")
     if marker and marker not in body:
         body = f"{body} {marker}"
@@ -124,9 +147,7 @@ def build_wire(template: EventTemplate, body: str, ctx: dict[str, str]) -> str:
             f"shost={ctx.get('hostname')} cs1Label=simulated cs1=true"
         )
     # RFC3164: <PRI>timestamp hostname mensaje
-    hostname = template.syslog_hostname
-    if "{{hostname}}" in hostname or not hostname.strip():
-        hostname = ctx.get("hostname", "lab-host")
+    hostname = _resolve_syslog_hostname(template, ctx)
     return f"<{template.pri}>{ctx.get('syslog_ts', '')} {hostname} {body}"
 
 

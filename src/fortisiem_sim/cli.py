@@ -15,12 +15,9 @@ from .engine import (
 )
 from .loaders import (
     default_lab_path,
-    list_scenarios,
     load_lab_profile,
-    load_scenario,
-    load_templates,
+    load_templates_merged,
     merge_lab_into_options,
-    resolve_scenario,
     resolve_templates_path,
     validate_all,
 )
@@ -81,6 +78,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-spoof", action="store_true")
     p.add_argument("-q", "--quiet", action="store_true")
     p.add_argument("-v", "--verbose", action="store_true")
+
+    db = p.add_subparsers(dest="command")
+    db_p = db.add_parser("db", help="Base SQLite local (config/fortisiem.db)")
+    db_p.add_argument(
+        "action",
+        choices=["init", "seed", "status"],
+        help="init=crear schema; seed=importar YAML; status=resumen",
+    )
     return p
 
 
@@ -116,22 +121,63 @@ def _build_options(args: argparse.Namespace) -> SendOptions:
     return opts
 
 
-def _resolve_config(args: argparse.Namespace) -> Path | None:
+def _resolve_config(args: argparse.Namespace) -> str | None:
     raw = args.scenario or (str(args.config) if args.config else "")
     if not raw:
         return None
-    return resolve_scenario(raw)
+    from .loaders import resolve_scenario
+    from .storage import resolve_scenario_ref, use_sql_storage
+
+    if use_sql_storage():
+        return resolve_scenario_ref(raw)
+    return resolve_scenario(raw).stem
+
+
+def _run_db_command(action: str) -> int:
+    from .db.connection import db_path, get_connection, init_schema
+    from .storage import enable_sql_storage
+
+    path = db_path()
+    if action == "init":
+        conn = get_connection(path)
+        init_schema(conn)
+        conn.close()
+        print(f"SQLite inicializada: {path}")
+        return 0
+    if action == "seed":
+        enable_sql_storage(seed_from_yaml=True)
+        print(f"Seed completado en {path}")
+        return 0
+    if action == "status":
+        if not path.exists():
+            print(f"SQLite no existe: {path}\n  Ejecuta: fortisiem-sim db init && fortisiem-sim db seed")
+            return 1
+        conn = get_connection(path)
+        try:
+            events = conn.execute("SELECT COUNT(*) AS n FROM event_templates").fetchone()["n"]
+            scenarios = conn.execute("SELECT COUNT(*) AS n FROM scenarios").fetchone()["n"]
+        finally:
+            conn.close()
+        print(f"SQLite: {path}")
+        print(f"  Eventos:    {events}")
+        print(f"  Escenarios: {scenarios}")
+        return 0
+    return 1
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+
+    if args.command == "db":
+        return _run_db_command(args.action)
+
     options = _build_options(args)
     templates_path = resolve_templates_path(options)
 
     if not templates_path.exists():
         print(f"ERROR: plantillas no encontradas: {templates_path}", file=sys.stderr)
         return 1
-    templates = load_templates(templates_path)
+    templates = load_templates_merged(templates_path)
 
     if args.web:
         from .web import serve
@@ -140,13 +186,15 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.list_scenarios:
-        scenarios = list_scenarios()
-        if not scenarios:
-            print("No hay escenarios en scenarios/")
+        from .storage import list_scenario_refs
+
+        ids = list_scenario_refs()
+        if not ids:
+            print("No hay escenarios (YAML o SQLite)")
             return 0
         print("Escenarios disponibles (usa el nombre corto):")
-        for path in scenarios:
-            print(f"  {path.stem}")
+        for sid in ids:
+            print(f"  {sid}")
         return 0
 
     if args.list_formats:
@@ -162,33 +210,49 @@ def main(argv: list[str] | None = None) -> int:
         return show_event_detail(templates, args.show_event)
 
     try:
-        config_path = _resolve_config(args)
+        config_id = _resolve_config(args)
     except ValueError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
 
     if args.list_phases:
-        if not config_path:
+        if not config_id:
             print("ERROR: --list-phases requiere un escenario", file=sys.stderr)
             return 1
-        scenario = load_scenario(config_path)
-        print(f"Fases en {config_path.stem}:")
+        from .storage import load_scenario_data
+
+        scenario = load_scenario_data(config_id)
+        print(f"Fases en {config_id}:")
         for phase in scenario.phases:
             n = sum(e.count for e in phase.events)
             print(f"  {phase.name:<28} {len(phase.events)} tipos, ~{n} eventos  # {phase.description}")
         return 0
 
     if args.validate:
-        if not config_path:
+        if not config_id:
             print("ERROR: --validate requiere un escenario", file=sys.stderr)
             return 1
-        errors = validate_all(config_path, templates_path)
+        from .storage import load_scenario_data, use_sql_storage
+
+        if use_sql_storage():
+            scenario = load_scenario_data(config_id)
+            errors = []
+            if not scenario.phases:
+                errors.append("Escenario sin fases")
+            for phase in scenario.phases:
+                for event in phase.events:
+                    if event.id not in templates:
+                        errors.append(f"Fase {phase.name}: evento desconocido {event.id!r}")
+        else:
+            from .loaders import resolve_scenario
+
+            errors = validate_all(resolve_scenario(config_id), templates_path)
         if errors:
             print("VALIDACIÓN FALLIDA:")
             for err in errors:
                 print(f"  - {err}")
             return 1
-        print(f"OK: {config_path.stem} + {templates_path.name}")
+        print(f"OK: {config_id} + {templates_path.name}")
         return 0
 
     if args.probe:
@@ -198,8 +262,10 @@ def main(argv: list[str] | None = None) -> int:
         print_summary(summary, dry_run=options.dry_run)
         return 0
 
-    if config_path:
-        scenario = load_scenario(config_path)
+    if config_id:
+        from .storage import load_scenario_data
+
+        scenario = load_scenario_data(config_id)
         if scenario.org_id == 1 and options.org_id != 1:
             scenario.org_id = options.org_id
     elif args.event:
@@ -241,7 +307,7 @@ def main(argv: list[str] | None = None) -> int:
     if summary.total == 0:
         print("AVISO: 0 eventos procesados.", file=sys.stderr)
         if args.phase:
-            print(f"  ¿Fase correcta? Prueba: fortisiem-sim --list-phases {config_path.stem}", file=sys.stderr)
+            print(f"  ¿Fase correcta? Prueba: fortisiem-sim --list-phases {config_id}", file=sys.stderr)
         if args.event:
             print("  ¿Event ID correcto? Prueba: fortisiem-sim --list-events", file=sys.stderr)
         return 1

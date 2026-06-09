@@ -35,6 +35,31 @@ def default_templates_path() -> Path:
     return package_root() / "templates" / "events.yaml"
 
 
+def custom_events_path() -> Path:
+    return package_root() / "templates" / "custom-events.yaml"
+
+
+def _parse_mitre_fields(raw: dict[str, Any]) -> tuple[list[str], list[str], list[str]]:
+    """Devuelve (mitre_tactics, mitre_techniques, mitre_flat)."""
+    mitre_raw = raw.get("mitre")
+    tactics: list[str] = []
+    techniques: list[str] = []
+    if isinstance(mitre_raw, dict):
+        tactics = [str(x).strip().upper() for x in mitre_raw.get("tactics", []) if str(x).strip()]
+        techniques = [str(x).strip() for x in mitre_raw.get("techniques", []) if str(x).strip()]
+    elif isinstance(mitre_raw, list):
+        for item in mitre_raw:
+            s = str(item).strip()
+            if not s:
+                continue
+            if s.upper().startswith("TA"):
+                tactics.append(s.upper())
+            elif s.upper().startswith("T"):
+                techniques.append(s)
+    flat = tactics + techniques
+    return tactics, techniques, flat
+
+
 def scenarios_dir() -> Path:
     return package_root() / "scenarios"
 
@@ -131,22 +156,121 @@ def load_templates(path: Path) -> dict[str, EventTemplate]:
     for event_id, raw in events_raw.items():
         if not isinstance(raw, dict):
             raise ValueError(f"Evento {event_id!r} inválido")
+        tactics, techniques, flat = _parse_mitre_fields(raw)
         out[event_id] = EventTemplate(
             id=event_id,
             name=str(raw.get("name", event_id)),
             format=str(raw.get("format", "syslog_generic")),
             severity=str(raw.get("severity", "info")),
             category=str(raw.get("category", "generic")),
+            source_system=str(raw.get("source_system", "")),
             body=str(raw.get("body", "")).rstrip("\n"),
             syslog_hostname=str(raw.get("syslog_hostname", "lab-host")),
             pri=int(raw.get("pri", 134)),
             fields=[str(x) for x in raw.get("fields", [])],
-            mitre=[str(x) for x in (raw.get("mitre") or [])],
+            mitre=flat,
+            mitre_tactics=tactics,
+            mitre_techniques=techniques,
             fortisiem_hints={str(k): str(v) for k, v in (raw.get("fortisiem_hints") or {}).items()},
             defaults={str(k): str(v) for k, v in (raw.get("defaults") or {}).items()},
             tags=[str(x) for x in (raw.get("tags") or [])],
         )
     return out
+
+
+def load_templates_merged(base: Path | None = None, include_custom: bool = True) -> dict[str, EventTemplate]:
+    """Carga events.yaml base y fusiona custom-events.yaml encima (o SQLite si está activo)."""
+    from .storage import load_all_event_templates, use_sql_storage
+
+    if use_sql_storage():
+        return load_all_event_templates(base)
+    base_path = base or default_templates_path()
+    merged = load_templates(base_path)
+    if not include_custom:
+        return merged
+    custom_path = custom_events_path()
+    if custom_path.exists() and custom_path.resolve() != base_path.resolve():
+        merged.update(load_templates(custom_path))
+    return merged
+
+
+def _validate_event_raw(event_id: str, raw: dict[str, Any]) -> list[str]:
+    from .render import SUPPORTED_FORMATS
+
+    errors: list[str] = []
+    if not str(raw.get("body", "")).strip():
+        errors.append(f"{event_id}: body vacío")
+    fmt = str(raw.get("format", "syslog_generic"))
+    if fmt not in SUPPORTED_FORMATS:
+        errors.append(f"{event_id}: formato {fmt!r} desconocido")
+    pri = int(raw.get("pri", 134))
+    if not 0 <= pri <= 199:
+        errors.append(f"{event_id}: PRI fuera de rango ({pri})")
+    return errors
+
+
+def parse_events_import(text: str) -> dict[str, dict[str, Any]]:
+    """Parsea YAML de importación (sección events: id → plantilla)."""
+    data = yaml.safe_load(text)
+    if not isinstance(data, dict):
+        raise ValueError("YAML inválido: la raíz debe ser un objeto")
+    events = data.get("events")
+    if not isinstance(events, dict):
+        raise ValueError("Falta sección 'events:' (mapa id → plantilla)")
+    out: dict[str, dict[str, Any]] = {}
+    errors: list[str] = []
+    for event_id, raw in events.items():
+        eid = str(event_id).strip()
+        if not eid:
+            errors.append("id de evento vacío")
+            continue
+        if not isinstance(raw, dict):
+            errors.append(f"{eid}: debe ser un objeto")
+            continue
+        errors.extend(_validate_event_raw(eid, raw))
+        out[eid] = raw
+    if errors:
+        raise ValueError("; ".join(errors))
+    if not out:
+        raise ValueError("No hay eventos en el fichero")
+    return out
+
+
+def merge_custom_events_import(
+    new_events: dict[str, dict[str, Any]],
+    path: Path | None = None,
+) -> tuple[list[str], list[str]]:
+    """Fusiona eventos importados (SQLite o custom-events.yaml). Devuelve (añadidos, actualizados)."""
+    from .storage import import_event_templates, use_sql_storage
+
+    if use_sql_storage():
+        return import_event_templates(new_events, path=path)
+    dest = path or custom_events_path()
+    if dest.exists():
+        data = _load_raw(dest)
+    else:
+        data = {"version": 2, "events": {}}
+    bucket = data.setdefault("events", {})
+    if not isinstance(bucket, dict):
+        raise ValueError("custom-events.yaml: 'events' debe ser un mapa")
+    added: list[str] = []
+    updated: list[str] = []
+    for eid, raw in new_events.items():
+        if eid in bucket:
+            updated.append(eid)
+        else:
+            added.append(eid)
+        bucket[eid] = raw
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    header = (
+        "# Eventos importados — se fusionan con templates/events.yaml\n"
+        "# Importar desde la GUI (Escenario → Catálogo) o editar manualmente.\n"
+    )
+    dest.write_text(
+        header + yaml.safe_dump(data, allow_unicode=True, sort_keys=False, default_flow_style=False),
+        encoding="utf-8",
+    )
+    return added, updated
 
 
 def _parse_pools(raw: dict[str, Any]) -> ActorPools:
@@ -157,6 +281,10 @@ def _parse_pools(raw: dict[str, Any]) -> ActorPools:
         src_ips=[str(x) for x in raw.get("src_ips", d.src_ips)],
         reporting_ips=[str(x) for x in raw.get("reporting_ips", d.reporting_ips)],
         domains=[str(x) for x in raw.get("domains", d.domains)],
+        c2_ips=[str(x) for x in raw.get("c2_ips", d.c2_ips)],
+        c2_uris=[str(x) for x in raw.get("c2_uris", d.c2_uris)],
+        c2_default_ip=str(raw.get("c2_default_ip", d.c2_default_ip)),
+        c2_default_uri=str(raw.get("c2_default_uri", d.c2_default_uri)),
     )
 
 
@@ -234,7 +362,7 @@ def load_scenario(path: Path) -> Scenario:
 def validate_all(scenario_path: Path, templates_path: Path) -> list[str]:
     from .render import SUPPORTED_FORMATS
 
-    templates = load_templates(templates_path)
+    templates = load_templates_merged(templates_path)
     scenario = load_scenario(scenario_path)
     errors: list[str] = []
 

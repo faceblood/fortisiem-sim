@@ -7,6 +7,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Iterator
 
+from .assets import apply_config_c2_to_scenario
 from .loaders import load_lab_profile, merge_lab_into_options
 from .models import EmittedEvent, EventTemplate, RunSummary, Scenario, ScenarioEvent, SendOptions
 from .render import build_context, render_wire
@@ -164,6 +165,7 @@ def iter_scenario_stream(
     out_fp=None,
 ) -> Iterator[tuple[str, Any]]:
     """Generador: ('phase', dict) al entrar en fase, ('event', EmittedEvent) por log."""
+    apply_config_c2_to_scenario(scenario)
     lab = load_lab_profile(Path(options.lab_path) if options.lab_path else None)
     merge_lab_into_options(options, lab)
     if options.seed is not None:

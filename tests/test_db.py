@@ -1,0 +1,69 @@
+from __future__ import annotations
+
+import pytest
+
+from fortisiem_sim.db.connection import ensure_database
+from fortisiem_sim.db.events_repo import load_all_templates, merge_events_import
+from fortisiem_sim.db.scenarios_repo import list_scenario_ids, load_scenario_model
+from fortisiem_sim.storage import (
+    load_assets_data,
+    load_scenario_data,
+    save_assets_data,
+    use_sql_storage,
+)
+
+
+@pytest.fixture
+def sql_db(tmp_path, monkeypatch):
+    db = tmp_path / "fortisiem.db"
+    monkeypatch.setenv("FORTISIEM_SIM_DB", str(db))
+    monkeypatch.setenv("FORTISIEM_SIM_STORAGE", "sql")
+    ensure_database(seed_from_yaml=True, path=db)
+    return db
+
+
+def test_use_sql_storage_env(monkeypatch, sql_db):
+    assert use_sql_storage() is True
+    monkeypatch.setenv("FORTISIEM_SIM_STORAGE", "yaml")
+    assert use_sql_storage() is False
+
+
+def test_seed_loads_events_and_scenarios(sql_db):
+    templates = load_all_templates()
+    assert len(templates) >= 23
+    assert "login_failed" in templates
+    ids = list_scenario_ids()
+    assert len(ids) >= 1
+    sc = load_scenario_model(ids[0], assets=load_assets_data())
+    assert sc.phases
+
+
+def test_assets_roundtrip(sql_db):
+    assets = load_assets_data()
+    assets["ad"]["users"].append("test.user")
+    save_assets_data(assets)
+    reloaded = load_assets_data()
+    assert "test.user" in reloaded["ad"]["users"]
+
+
+def test_import_event_sql(sql_db):
+    added, updated = merge_events_import(
+        {
+            "sql_only_evt": {
+                "name": "SQL event",
+                "format": "syslog_generic",
+                "body": "event=sql_test simulated=true",
+                "mitre": {"tactics": ["TA0001"], "techniques": ["T1078"]},
+            }
+        },
+        path=sql_db,
+    )
+    assert added == ["sql_only_evt"]
+    templates = load_all_templates()
+    assert "sql_only_evt" in templates
+
+
+def test_load_scenario_via_storage(sql_db):
+    ids = list_scenario_ids()
+    sc = load_scenario_data(ids[0])
+    assert sc.name
