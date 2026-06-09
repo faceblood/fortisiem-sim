@@ -41,6 +41,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--list-formats", action="store_true", help="Formatos soportados")
     p.add_argument("--show-event", metavar="ID", help="Detalle de un evento")
     p.add_argument("--validate", action="store_true", help="Validar escenario + plantillas")
+    p.add_argument("--list-phases", action="store_true", help="Listar fases del escenario (--config)")
     p.add_argument("--probe", action="store_true", help="Enviar 1 evento de prueba")
     p.add_argument("--phase", default="", help="Solo esta fase")
     p.add_argument("--event", default="", help="Solo este evento")
@@ -120,6 +121,17 @@ def main(argv: list[str] | None = None) -> int:
     if args.show_event:
         return show_event_detail(templates, args.show_event)
 
+    if args.list_phases:
+        if not args.config:
+            print("ERROR: --list-phases requiere --config", file=sys.stderr)
+            return 1
+        scenario = load_scenario(args.config)
+        print(f"Fases en {args.config}:")
+        for phase in scenario.phases:
+            n = sum(e.count for e in phase.events)
+            print(f"  {phase.name:<28} {len(phase.events)} tipos, ~{n} eventos  # {phase.description}")
+        return 0
+
     if args.validate:
         if not args.config:
             print("ERROR: --validate requiere --config", file=sys.stderr)
@@ -147,8 +159,16 @@ def main(argv: list[str] | None = None) -> int:
     elif args.event:
         scenario = _minimal_scenario(options.org_id)
     else:
-        print("ERROR: usa --config, --event, --list-events o --validate", file=sys.stderr)
+        build_parser().print_help()
+        print("\nERROR: indica --config <escenario.yml> o --event <id>", file=sys.stderr)
         return 1
+
+    if args.dry_run and not args.quiet:
+        print(
+            "MODO: dry-run (solo genera logs en pantalla; NO envía a FortiSIEM).\n"
+            "      Para envío real: añade --send y ejecuta con sudo.\n",
+            file=sys.stderr,
+        )
 
     if not args.dry_run and options.spoof_src:
         print(
@@ -166,6 +186,14 @@ def main(argv: list[str] | None = None) -> int:
         )
     except (KeyError, ValueError, RuntimeError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
+    if summary.total == 0:
+        print("AVISO: 0 eventos procesados.", file=sys.stderr)
+        if args.phase:
+            print(f"  ¿Fase correcta? Prueba: fortisiem-sim --list-phases --config {args.config}", file=sys.stderr)
+        if args.event:
+            print("  ¿Event ID correcto? Prueba: fortisiem-sim --list-events", file=sys.stderr)
         return 1
 
     if not args.quiet:

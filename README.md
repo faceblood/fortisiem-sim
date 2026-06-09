@@ -17,13 +17,23 @@ Framework Python **mejorado** para simular logs hacia **FortiSIEM 7.5 Enterprise
 | Instalación | manual | `pip install .` → `fortisiem-sim` |
 | Tests | No | `pytest` |
 
-## Instalación
+## Instalación (HTTPS)
 
 ```bash
+git clone https://github.com/faceblood/fortisiem-sim.git
 cd fortisiem-sim
-python3 -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"  # o: pip install -r requirements.txt && pip install -e .
+chmod +x install.sh && ./install.sh
 ```
+
+O manualmente:
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+pip install --upgrade pip setuptools wheel
+pip install -r requirements.txt && pip install -e .
+```
+
+**Importante:** tras instalar debes activar el venv (`source .venv/bin/activate`) o usar la ruta completa `.venv/bin/fortisiem-sim`. El comando `fortisiem-sim` no existe en el sistema hasta que actives el venv.
 
 `requirements.txt`:
 
@@ -170,6 +180,28 @@ send_syslog_scapy("10.255.9.3", 514, "<134>...", src_ip="192.0.2.10", use_spoof=
 ```bash
 pip install pytest
 pytest tests/ -q
+```
+
+## Troubleshooting — «no ejecuta nada»
+
+| Síntoma | Causa | Solución |
+|---------|-------|----------|
+| `command not found: fortisiem-sim` | Venv no activado | `source .venv/bin/activate` o `.venv/bin/fortisiem-sim` |
+| No llegan logs a FortiSIEM | Modo **dry-run** (default) | Añade `--send` y usa **sudo** |
+| `sudo: fortisiem-sim: command not found` | sudo no ve el venv | `sudo .venv/bin/fortisiem-sim ... --send` |
+| Permission denied /dev/bpf | Scapy sin root | `sudo .venv/bin/fortisiem-sim ... --send` |
+| `0 eventos procesados` | Fase mal escrita | `fortisiem-sim --list-phases --config scenarios/...` |
+| Solo texto en pantalla | Comportamiento normal en dry-run | Es correcto; usa `--send` para enviar |
+
+```bash
+# Diagnóstico rápido
+source .venv/bin/activate
+fortisiem-sim --list-phases --config scenarios/ransomware-tabletop.yml
+fortisiem-sim --config scenarios/ransomware-tabletop.yml --phase recon_and_access
+
+# Envío real
+sudo .venv/bin/fortisiem-sim --config scenarios/ransomware-tabletop.yml \
+  --phase recon_and_access --send --no-spoof --target 10.255.9.3
 ```
 
 ## Seguridad

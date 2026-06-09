@@ -43,7 +43,18 @@ def send_syslog_scapy(
     kwargs: dict = {"verbose": False}
     if iface:
         kwargs["iface"] = iface
-    send(packet, **kwargs)
+    try:
+        send(packet, **kwargs)
+    except Exception as exc:
+        msg = str(exc).lower()
+        if "permission" in msg or "bpf" in msg or "root" in msg:
+            raise RuntimeError(
+                "Scapy necesita privilegios elevados para enviar paquetes.\n"
+                "  sudo $(which fortisiem-sim) ... --send\n"
+                "  o: sudo .venv/bin/fortisiem-sim ... --send\n"
+                "Sin --send el modo dry-run solo imprime logs (no envía a FortiSIEM)."
+            ) from exc
+        raise
 
 
 def resolve_local_ip() -> str:
