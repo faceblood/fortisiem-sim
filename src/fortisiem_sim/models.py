@@ -75,6 +75,7 @@ class ScenarioEvent:
     jitter: float | None = None
     actor: str = ""
     overrides: dict[str, str] = field(default_factory=dict)
+    sort_order: int = 0
 
 
 @dataclass
@@ -84,6 +85,7 @@ class ScenarioEmail:
     cc: str = ""
     actor: str = ""
     overrides: dict[str, str] = field(default_factory=dict)
+    sort_order: int = 0
 
 
 @dataclass

@@ -65,5 +65,30 @@ textarea { min-height: 60px; resize: vertical; }
 .catalog-table .pill-system { background: #1a3a52; color: #8ec8ff; border-color: #2a5a7a; }
 .pill-email, .phase-email .mitre-badge { background: #3a2a52; color: #d8b4fe; border-color: #5a3a7a; }
 .line-email { color: #a78bfa; margin: 4px 0; font-size: 12px; }
+.manual-panel {
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  background: rgba(31, 111, 235, 0.06);
+}
+.manual-step-preview { font-size: 13px; line-height: 1.45; min-height: 2.5em; }
+.manual-step-label { font-weight: 600; margin-bottom: 4px; }
+.manual-done { color: var(--ok); font-weight: 600; }
+.phase-step-actions { gap: 8px; margin-top: 6px; }
+.email-row-inline {
+  border: 1px dashed #5a3a7a;
+  border-radius: 6px;
+  padding: 8px;
+  margin-bottom: 8px;
+  background: rgba(90, 58, 122, 0.12);
+}
+.email-step-tag {
+  flex: 0 0 100%;
+  font-size: 11px;
+  color: #d8b4fe;
+  margin-bottom: 4px;
+}
+.email-row-inline .email-step-tag { width: 100%; }
 .ph-event-hint { margin: 4px 0 8px; }
 .event-row .ev-ttp { font-size: 10px; color: var(--muted); margin-top: 2px; }

@@ -21,7 +21,51 @@ def _parse_email(raw: dict[str, Any]) -> ScenarioEmail:
         cc=str(raw.get("cc", "")),
         actor=str(raw.get("actor", "")),
         overrides={str(k): str(v) for k, v in (raw.get("overrides") or {}).items()},
+        sort_order=int(raw.get("sort_order", 0)),
     )
+
+
+def _load_phase_emails(conn: sqlite3.Connection, phase_id: int) -> list[ScenarioEmail]:
+    return [
+        _parse_email({
+            "template_id": em["template_id"],
+            "to_address": em["to_address"],
+            "cc": em["cc"],
+            "actor": em["actor"],
+            "overrides": json.loads(em["overrides_json"] or "{}"),
+            "sort_order": em["sort_order"],
+        })
+        for em in conn.execute(
+            """
+            SELECT * FROM scenario_phase_emails
+            WHERE phase_id = ?
+            ORDER BY sort_order, id
+            """,
+            (phase_id,),
+        )
+    ]
+
+
+def _load_phase_events(conn: sqlite3.Connection, phase_id: int) -> list:
+    from ..models import ScenarioEvent
+
+    return [
+        ScenarioEvent(
+            id=ev["event_id"],
+            count=int(ev["count"]),
+            actor=str(ev["actor"] or ""),
+            overrides=json.loads(ev["overrides_json"] or "{}"),
+            sort_order=int(ev["sort_order"]),
+        )
+        for ev in conn.execute(
+            """
+            SELECT * FROM scenario_phase_events
+            WHERE phase_id = ?
+            ORDER BY sort_order, id
+            """,
+            (phase_id,),
+        )
+    ]
 
 
 def _phase_type(row: sqlite3.Row) -> str:
@@ -95,42 +139,10 @@ def load_scenario_model(scenario_id: str, assets: dict[str, Any] | None = None) 
             events = []
             emails: list[ScenarioEmail] = []
             if ptype == "email":
-                emails = [
-                    _parse_email({
-                        "template_id": em["template_id"],
-                        "to_address": em["to_address"],
-                        "cc": em["cc"],
-                        "actor": em["actor"],
-                        "overrides": json.loads(em["overrides_json"] or "{}"),
-                    })
-                    for em in conn.execute(
-                        """
-                        SELECT * FROM scenario_phase_emails
-                        WHERE phase_id = ?
-                        ORDER BY sort_order, id
-                        """,
-                        (ph_row["id"],),
-                    )
-                ]
+                emails = _load_phase_emails(conn, ph_row["id"])
             else:
-                events = [
-                    _parse_event(
-                        {
-                            "id": ev["event_id"],
-                            "count": ev["count"],
-                            "actor": ev["actor"],
-                            "overrides": json.loads(ev["overrides_json"] or "{}"),
-                        }
-                    )
-                    for ev in conn.execute(
-                        """
-                        SELECT * FROM scenario_phase_events
-                        WHERE phase_id = ?
-                        ORDER BY sort_order, id
-                        """,
-                        (ph_row["id"],),
-                    )
-                ]
+                events = _load_phase_events(conn, ph_row["id"])
+                emails = _load_phase_emails(conn, ph_row["id"])
             phases.append(
                 ScenarioPhase(
                     name=ph_row["slug"],
@@ -188,6 +200,7 @@ def builder_payload(scenario_id: str, assets: dict[str, Any] | None = None) -> d
                         "to_address": em["to_address"],
                         "cc": em["cc"] or "",
                         "actor": em["actor"] or "",
+                        "sort_order": int(em["sort_order"]),
                     }
                     for em in conn.execute(
                         """
@@ -214,10 +227,28 @@ def builder_payload(scenario_id: str, assets: dict[str, Any] | None = None) -> d
                     "id": ev["event_id"],
                     "count": ev["count"],
                     "actor": ev["actor"] or "",
+                    "sort_order": int(ev["sort_order"]),
                 }
                 for ev in conn.execute(
                     """
                     SELECT * FROM scenario_phase_events
+                    WHERE phase_id = ?
+                    ORDER BY sort_order, id
+                    """,
+                    (ph_row["id"],),
+                )
+            ]
+            emails = [
+                {
+                    "template_id": em["template_id"],
+                    "to_address": em["to_address"],
+                    "cc": em["cc"] or "",
+                    "actor": em["actor"] or "",
+                    "sort_order": int(em["sort_order"]),
+                }
+                for em in conn.execute(
+                    """
+                    SELECT * FROM scenario_phase_emails
                     WHERE phase_id = ?
                     ORDER BY sort_order, id
                     """,
@@ -231,6 +262,7 @@ def builder_payload(scenario_id: str, assets: dict[str, Any] | None = None) -> d
                 "mitre_tactic": mitre_tactic,
                 "mitre_techniques": mitre_techniques,
                 "events": events,
+                "emails": emails,
             })
         actor_keys = list(sc.actors.profiles.keys()) if sc.actors.profiles else []
         return {
@@ -345,22 +377,47 @@ def save_from_builder(
                 ),
             )
             phase_id = cur.lastrowid
-            for ei, ev in enumerate(ph.get("events", [])):
-                conn.execute(
-                    """
-                    INSERT INTO scenario_phase_events (
-                        phase_id, event_id, count, actor, overrides_json, sort_order
-                    ) VALUES (?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        phase_id,
-                        ev["id"],
-                        int(ev.get("count", 1)),
-                        str(ev.get("actor", "")),
-                        json.dumps(ev.get("overrides") or {}),
-                        ei,
-                    ),
-                )
+            steps: list[tuple[str, dict[str, Any], int]] = []
+            for ev in ph.get("events", []):
+                steps.append(("event", ev, int(ev.get("sort_order", len(steps)))))
+            for em in ph.get("emails", []):
+                steps.append(("email", em, int(em.get("sort_order", len(steps)))))
+            steps.sort(key=lambda item: item[2])
+            for order, (kind, item, _) in enumerate(steps):
+                if kind == "email":
+                    conn.execute(
+                        """
+                        INSERT INTO scenario_phase_emails (
+                            phase_id, template_id, to_address, cc, actor,
+                            overrides_json, sort_order
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            phase_id,
+                            item["template_id"],
+                            str(item.get("to_address", item.get("to", ""))),
+                            str(item.get("cc", "")),
+                            str(item.get("actor", "")),
+                            json.dumps(item.get("overrides") or {}),
+                            order,
+                        ),
+                    )
+                else:
+                    conn.execute(
+                        """
+                        INSERT INTO scenario_phase_events (
+                            phase_id, event_id, count, actor, overrides_json, sort_order
+                        ) VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            phase_id,
+                            item["id"],
+                            int(item.get("count", 1)),
+                            str(item.get("actor", "")),
+                            json.dumps(item.get("overrides") or {}),
+                            order,
+                        ),
+                    )
         conn.commit()
     finally:
         conn.close()

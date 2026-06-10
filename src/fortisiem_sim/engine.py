@@ -9,7 +9,7 @@ from typing import Any, Iterator
 
 from .assets import apply_config_c2_to_scenario
 from .loaders import load_lab_profile, merge_lab_into_options
-from .models import EmittedEmail, EmittedEvent, EventTemplate, RunSummary, Scenario, ScenarioEvent, SendOptions
+from .models import EmittedEmail, EmittedEvent, EventTemplate, RunSummary, Scenario, ScenarioEvent, ScenarioPhase, SendOptions
 from .mail import render_email, send_html_email
 from .render import build_context, render_wire
 from .syslog import resolve_local_ip, send_syslog_scapy
@@ -154,7 +154,20 @@ def _count_timeline_events(scenario: Scenario, phase_filter: str) -> int:
             total += len(phase.emails)
         else:
             total += sum(e.count for e in phase.events)
+            total += len(phase.emails)
     return total
+
+
+def _iter_mitre_phase_steps(phase: ScenarioPhase):
+    """Eventos y correos de una fase MITRE en orden de sort_order."""
+    steps: list[tuple[int, str, Any]] = []
+    for ev in phase.events:
+        steps.append((int(getattr(ev, "sort_order", 0)), "event", ev))
+    for em in phase.emails:
+        steps.append((int(getattr(em, "sort_order", 0)), "email", em))
+    steps.sort(key=lambda item: item[0])
+    for _, kind, payload in steps:
+        yield kind, payload
 
 
 def emit_email_one(
@@ -287,7 +300,29 @@ def iter_scenario_stream(
                     ),
                 )
             continue
-        for event in phase.events:
+        for kind, step in _iter_mitre_phase_steps(phase):
+            if kind == "email":
+                tmpl_dict = (email_templates or {}).get(step.template_id)
+                if not tmpl_dict:
+                    raise KeyError(f"Plantilla de correo no encontrada: {step.template_id}")
+                yield (
+                    "email",
+                    emit_email_one(
+                        scenario,
+                        {"id": step.template_id, **tmpl_dict},
+                        smtp_cfg or {},
+                        options,
+                        phase_name=phase.name,
+                        actor_name=step.actor or scenario.actors.default_profile,
+                        to_address=step.to_address,
+                        cc=step.cc,
+                        overrides=step.overrides,
+                        out_fp=out_fp,
+                        summary=summary,
+                    ),
+                )
+                continue
+            event = step
             tmpl = templates.get(event.id)
             if not tmpl:
                 raise KeyError(f"Plantilla no encontrada: {event.id}")
@@ -308,6 +343,151 @@ def iter_scenario_stream(
                 seq += 1
                 if not no_delay and i < count - 1:
                     _sleep(delay, jitter)
+
+
+def build_manual_blocks(
+    scenario: Scenario,
+    *,
+    phase_filter: str = "",
+    count_override: int | None = None,
+    email_templates: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Plan tabletop: bloques manuales en cambio de fase y antes de cada correo."""
+    templates = email_templates or {}
+    blocks: list[dict[str, Any]] = []
+
+    for phase in scenario.phases:
+        if phase_filter and phase.name != phase_filter:
+            continue
+
+        if getattr(phase, "phase_type", "mitre") == "email":
+            for em in phase.emails:
+                tmpl = templates.get(em.template_id, {})
+                blocks.append({
+                    "kind": "email",
+                    "phase": phase.name,
+                    "label": f"📧 {tmpl.get('name', em.template_id)} → {em.to_address}",
+                    "template_id": em.template_id,
+                    "template_name": tmpl.get("name", em.template_id),
+                    "to_address": em.to_address,
+                    "cc": em.cc,
+                    "subject": tmpl.get("subject", ""),
+                })
+            continue
+
+        pending_events: list[dict[str, Any]] = []
+        first_segment = True
+
+        def flush_phase_block() -> None:
+            nonlocal pending_events, first_segment
+            if not pending_events:
+                return
+            desc = phase.description or ""
+            if first_segment:
+                label = f"▶ Fase: {phase.name}"
+                if desc:
+                    label += f" — {desc}"
+            else:
+                label = f"▶ Fase: {phase.name} (continuación)"
+            blocks.append({
+                "kind": "phase",
+                "phase": phase.name,
+                "description": desc,
+                "label": label,
+                "events": pending_events.copy(),
+            })
+            pending_events = []
+            first_segment = False
+
+        for kind, step in _iter_mitre_phase_steps(phase):
+            if kind == "email":
+                flush_phase_block()
+                tmpl = templates.get(step.template_id, {})
+                blocks.append({
+                    "kind": "email",
+                    "phase": phase.name,
+                    "label": f"📧 {tmpl.get('name', step.template_id)} → {step.to_address}",
+                    "template_id": step.template_id,
+                    "template_name": tmpl.get("name", step.template_id),
+                    "to_address": step.to_address,
+                    "cc": step.cc,
+                    "subject": tmpl.get("subject", ""),
+                })
+            else:
+                count = max(1, count_override if count_override is not None else step.count)
+                pending_events.append({
+                    "id": step.id,
+                    "count": count,
+                    "actor": step.actor,
+                    "overrides": step.overrides,
+                })
+        flush_phase_block()
+
+    return blocks
+
+
+def execute_manual_block(
+    scenario: Scenario,
+    block: dict[str, Any],
+    templates: dict[str, EventTemplate],
+    options: SendOptions,
+    summary: RunSummary,
+    *,
+    email_templates: dict[str, Any] | None = None,
+    smtp_cfg: dict[str, Any] | None = None,
+    no_delay: bool = False,
+) -> dict[str, Any]:
+    """Ejecuta un bloque del plan manual (fase o correo)."""
+    apply_config_c2_to_scenario(scenario)
+    lab = load_lab_profile(Path(options.lab_path) if options.lab_path else None)
+    merge_lab_into_options(options, lab)
+    if options.seed is not None:
+        random.seed(options.seed)
+
+    phase_name = str(block.get("phase", ""))
+    results: dict[str, Any] = {"events": [], "email": None}
+
+    if block.get("kind") == "email":
+        tmpl_dict = (email_templates or {}).get(block["template_id"])
+        if not tmpl_dict:
+            raise KeyError(f"Plantilla de correo no encontrada: {block['template_id']}")
+        emitted = emit_email_one(
+            scenario,
+            {"id": block["template_id"], **tmpl_dict},
+            smtp_cfg or {},
+            options,
+            phase_name=phase_name,
+            actor_name=scenario.actors.default_profile,
+            to_address=str(block.get("to_address", "")),
+            cc=str(block.get("cc", "")),
+            summary=summary,
+        )
+        results["email"] = asdict(emitted)
+        return results
+
+    seq = 0
+    for ev_spec in block.get("events", []):
+        tmpl = templates.get(ev_spec["id"])
+        if not tmpl:
+            raise KeyError(f"Plantilla no encontrada: {ev_spec['id']}")
+        count = max(1, int(ev_spec.get("count", 1)))
+        delay = options.delay or lab.default_delay
+        jitter = options.jitter or lab.default_jitter
+        actor = ev_spec.get("actor") or scenario.actors.default_profile
+        overrides = ev_spec.get("overrides") or {}
+        for i in range(count):
+            emitted = emit_one(
+                scenario, tmpl, options,
+                phase_name=phase_name, actor_name=actor, overrides=overrides,
+                sequence_index=seq, timeline_total=max(count, 1),
+                out_fp=None, summary=summary,
+            )
+            results["events"].append(asdict(emitted))
+            seq += 1
+            if not no_delay and i < count - 1:
+                _sleep(delay, jitter)
+
+    return results
 
 
 def run_scenario(

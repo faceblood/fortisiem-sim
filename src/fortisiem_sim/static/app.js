@@ -50,6 +50,9 @@ const state = {
   eventCatalog: [],
   eventsByTactic: {},
   emailCatalog: [],
+  manualPlan: [],
+  manualIndex: 0,
+  manualActive: false,
 };
 
 /* ========== EJECUTAR ========== */
@@ -69,7 +72,141 @@ function runParams() {
 
 function setRunning(on) {
   $("btn-run").disabled = on;
-  $("btn-stop").style.display = on ? "block" : "none";
+  $("btn-stop").style.display = on && !state.manualActive ? "block" : "none";
+  if ($("btn-step")) $("btn-step").disabled = on || !state.manualActive || state.manualIndex >= state.manualPlan.length;
+}
+
+function toggleManualMode() {
+  const manual = $("run-manual").checked;
+  $("run-manual-panel").style.display = manual ? "block" : "none";
+  $("run-sse").disabled = manual;
+  if (manual) $("run-sse").checked = false;
+  if (!manual) resetManualRun();
+}
+
+function resetManualRun() {
+  state.manualPlan = [];
+  state.manualIndex = 0;
+  state.manualActive = false;
+  $("btn-step").disabled = true;
+  $("run-step-counter").textContent = "";
+  $("run-step-preview").textContent = "Pulsa Instanciar para cargar el plan.";
+}
+
+function renderManualStepPreview() {
+  const block = state.manualPlan[state.manualIndex];
+  const preview = $("run-step-preview");
+  const counter = $("run-step-counter");
+  if (!block) {
+    preview.innerHTML = state.manualPlan.length
+      ? '<span class="manual-done">✓ Escenario completado</span>'
+      : "Sin pasos en el plan.";
+    counter.textContent = state.manualPlan.length
+      ? `Completado · ${state.manualPlan.length} pasos`
+      : "";
+    $("btn-step").disabled = true;
+    return;
+  }
+  const evCount = (block.events || []).reduce((n, e) => n + (+e.count || 1), 0);
+  const detail =
+    block.kind === "email"
+      ? `<div class="meta">Plantilla: <code>${esc(block.template_id)}</code> · ${esc(block.subject || "")}</div>`
+      : block.kind === "phase" && evCount
+        ? `<div class="meta">${evCount} evento(s) syslog en este paso</div>`
+        : block.kind === "phase"
+          ? `<div class="meta">Fase sin eventos syslog (solo transición)</div>`
+          : "";
+  preview.innerHTML = `<div class="manual-step-label">${esc(block.label)}</div>${detail}`;
+  counter.textContent = `Paso ${state.manualIndex + 1} / ${state.manualPlan.length}`;
+  $("btn-step").disabled = false;
+}
+
+function runParamsObject() {
+  const body = Object.fromEntries(runParams());
+  body.send = $("run-send").checked;
+  body.no_spoof = $("run-nospoof").checked;
+  return body;
+}
+
+async function loadManualPlan() {
+  const out = $("run-out");
+  out.innerHTML = "";
+  state.eventCount = 0;
+  state.expectedTotal = 0;
+  $("run-progress").style.display = "block";
+  setRunning(true);
+  try {
+    const data = await api("/api/run/plan?" + runParams().toString());
+    state.manualPlan = data.blocks || [];
+    state.manualIndex = 0;
+    state.manualActive = true;
+    state.expectedTotal = state.manualPlan.reduce((n, b) => {
+      if (b.kind === "email") return n + 1;
+      return n + (b.events || []).reduce((m, e) => m + (+e.count || 1), 0);
+    }, 0);
+    updateRunCounter();
+    renderManualStepPreview();
+    banner(
+      $("run-banner"),
+      "dry",
+      state.manualPlan.length
+        ? `Modo manual: ${state.manualPlan.length} pasos. Pulsa «Ejecutar paso ▶».`
+        : "Sin pasos para este escenario/fase."
+    );
+  } catch (e) {
+    banner($("run-banner"), "live", "ERROR: " + e.message);
+    resetManualRun();
+  }
+  setRunning(false);
+}
+
+async function executeManualStep() {
+  if (!state.manualActive || state.manualIndex >= state.manualPlan.length) return;
+  const out = $("run-out");
+  setRunning(true);
+  $("btn-step").disabled = true;
+  const body = runParamsObject();
+  body.step = state.manualIndex;
+  try {
+    const res = await api("/api/run/step", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    out.insertAdjacentHTML(
+      "beforeend",
+      `<div class="line-phase">${esc(res.label)}</div>`
+    );
+    (res.events || []).forEach((e) => {
+      renderRunEvent(e, out);
+      state.eventCount++;
+    });
+    if (res.email) {
+      state.eventCount++;
+      const em = res.email;
+      out.insertAdjacentHTML(
+        "beforeend",
+        `<div class="line-email">📧 [${em.dry_run ? "DRY" : em.sent ? "SENT" : "FAIL"}] ${esc(em.subject)} → ${esc(em.to_address)}</div>`
+      );
+    }
+    updateRunCounter();
+    out.scrollTop = out.scrollHeight;
+    state.manualIndex++;
+    if (res.done) {
+      banner(
+        $("run-banner"),
+        res.live ? "live" : "dry",
+        res.live ? `Completado · ${res.summary.sent} enviados` : `Completado · ${res.summary.total} acciones`
+      );
+      renderManualStepPreview();
+    } else {
+      banner($("run-banner"), res.live ? "live" : "dry", `Paso ${state.manualIndex}/${res.total} ejecutado. Siguiente listo.`);
+      renderManualStepPreview();
+    }
+  } catch (e) {
+    banner($("run-banner"), "live", "ERROR: " + e.message);
+  }
+  setRunning(false);
 }
 
 function updateRunCounter() {
@@ -207,10 +344,14 @@ async function runBatch() {
 }
 
 $("btn-run").addEventListener("click", () => {
-  if ($("run-sse").checked) runSse();
+  if ($("run-manual").checked) loadManualPlan();
+  else if ($("run-sse").checked) runSse();
   else runBatch();
 });
+$("btn-step").addEventListener("click", executeManualStep);
+$("run-manual").addEventListener("change", toggleManualMode);
 $("btn-stop").addEventListener("click", stopRun);
+toggleManualMode();
 
 /* ========== CONFIG ========== */
 function renderUserChips(users) {
@@ -494,7 +635,7 @@ function applyMitreToPhaseBlock(block, tacticId, replaceEvents) {
     badge.textContent = `${tactic.slug} · ${tactic.id} · ${tactic.name} · ${(tactic.techniques || []).join(", ")}`;
   }
   if (replaceEvents && tactic.suggested_events?.length) {
-    const wrap = block.querySelector(".events-wrap");
+    const wrap = block.querySelector(".steps-wrap");
     wrap.innerHTML = "";
     tactic.suggested_events.forEach((ev) =>
       wrap.appendChild(renderEventRow(normalizeScenarioEvent({ ...ev, actor: "" }), block))
@@ -515,7 +656,28 @@ function phaseFromTactic(tacticId, withEvents) {
     events: withEvents
       ? (tactic.suggested_events || []).map((ev) => normalizeScenarioEvent({ ...ev, actor: "" }))
       : [normalizeScenarioEvent({ id: firstAllowedEventId(tactic.id) || "login_failed", count: 1, actor: "" })],
+    emails: [],
   };
+}
+
+function mitrePhaseSteps(ph) {
+  const steps = [];
+  (ph.events || []).forEach((ev, i) => {
+    steps.push({
+      type: "event",
+      sort_order: ev.sort_order ?? i,
+      data: normalizeScenarioEvent(ev),
+    });
+  });
+  (ph.emails || []).forEach((em, i) => {
+    steps.push({
+      type: "email",
+      sort_order: em.sort_order ?? (ph.events?.length || 0) + i,
+      data: em,
+    });
+  });
+  steps.sort((a, b) => a.sort_order - b.sort_order);
+  return steps;
 }
 
 function setScenarioMode(mode) {
@@ -641,9 +803,10 @@ function updatePhaseEventHint(block) {
 }
 
 function refreshPhaseEventSelects(block) {
-  const tid = block.querySelector(".ph-mitre").value;
+  const tid = block.querySelector(".ph-mitre")?.value;
+  if (!tid) return;
   const allowed = new Set(allowedEventIds(tid));
-  block.querySelectorAll(".event-row").forEach((row) => {
+  block.querySelectorAll(".steps-wrap > .event-row").forEach((row) => {
     const sel = row.querySelector(".ev-id");
     const cur = sel.value;
     sel.innerHTML = eventOptions(cur, tid);
@@ -736,12 +899,13 @@ function renderEmailPhaseBlock(ph, pi) {
     <div class="emails-wrap"></div>
     <button type="button" class="btn btn-ghost btn-sm add-email">+ Correo</button>`;
   const wrap = div.querySelector(".emails-wrap");
-  (ph.emails || []).forEach((em) => wrap.appendChild(renderEmailRow(em, div)));
+  (ph.emails || []).forEach((em) => wrap.appendChild(renderEmailRow(em, div, false)));
   div.querySelector(".add-email").addEventListener("click", () => {
     wrap.appendChild(
       renderEmailRow(
         { template_id: state.emailCatalog[0]?.id || "", to_address: "{{user}}@{{domain}}", cc: "", actor: "" },
-        div
+        div,
+        false
       )
     );
   });
@@ -752,14 +916,14 @@ function renderEmailPhaseBlock(ph, pi) {
   return div;
 }
 
-function renderEmailRow(em, block) {
+function renderEmailRow(em, block, inline) {
   const row = document.createElement("div");
-  row.className = "event-row email-row";
+  row.className = "event-row email-row" + (inline ? " email-row-inline" : "");
   row.innerHTML = `
+    ${inline ? '<div class="email-step-tag">📧 Correo</div>' : ""}
     <div><label>Plantilla</label><select class="em-tpl">${emailTemplateOptions(em.template_id)}</select></div>
     <div><label>Para (to)</label><input class="em-to" value="${esc(em.to_address || "")}" placeholder="{{user}}@{{domain}}"></div>
     <div><label>CC</label><input class="em-cc" value="${esc(em.cc || "")}"></div>
-    <div><label>actor</label><select class="em-actor">${actorOptions(em.actor)}</select></div>
     <div><label>&nbsp;</label><button type="button" class="btn btn-ghost btn-sm rm-em">×</button></div>`;
   row.querySelector(".rm-em").addEventListener("click", () => row.remove());
   return row;
@@ -794,13 +958,20 @@ function renderMitrePhaseBlock(ph, pi) {
       <button type="button" class="btn btn-ghost btn-sm ph-apply-events">Aplicar eventos sugeridos MITRE</button>
     </div>
     <div class="meta ph-event-hint"></div>
-    <div class="events-wrap"></div>
-    <button type="button" class="btn btn-ghost btn-sm add-event" disabled>+ Evento (MITRE)</button>`;
+    <div class="steps-wrap"></div>
+    <div class="row phase-step-actions">
+      <button type="button" class="btn btn-ghost btn-sm add-event" disabled>+ Evento (MITRE)</button>
+      <button type="button" class="btn btn-ghost btn-sm add-email-inline pill-email">+ Correo</button>
+    </div>`;
 
-  const wrap = div.querySelector(".events-wrap");
-  (synced.events || ph.events || []).forEach((ev) =>
-    wrap.appendChild(renderEventRow(normalizeScenarioEvent(ev), div))
-  );
+  const wrap = div.querySelector(".steps-wrap");
+  mitrePhaseSteps(synced).forEach((step) => {
+    if (step.type === "email") {
+      wrap.appendChild(renderEmailRow(step.data, div, true));
+    } else {
+      wrap.appendChild(renderEventRow(step.data, div));
+    }
+  });
 
   div.querySelector(".ph-mitre").addEventListener("change", (e) => {
     applyMitreToPhaseBlock(div, e.target.value, false);
@@ -815,6 +986,20 @@ function renderMitrePhaseBlock(ph, pi) {
       renderEventRow(
         normalizeScenarioEvent({ id: firstAllowedEventId(tid) || "", count: 1, actor: "" }),
         div
+      )
+    );
+  });
+  div.querySelector(".add-email-inline").addEventListener("click", () => {
+    wrap.appendChild(
+      renderEmailRow(
+        {
+          template_id: state.emailCatalog[0]?.id || "ir_alert_tabletop",
+          to_address: "{{user}}@{{domain}}",
+          cc: "",
+          actor: "",
+        },
+        div,
+        true
       )
     );
   });
@@ -858,7 +1043,6 @@ function readPhasesFromUI() {
           template_id: row.querySelector(".em-tpl").value,
           to_address: row.querySelector(".em-to").value.trim(),
           cc: row.querySelector(".em-cc").value.trim(),
-          actor: row.querySelector(".em-actor").value,
         });
       });
       phases.push({
@@ -870,14 +1054,26 @@ function readPhasesFromUI() {
       return;
     }
     const events = [];
-    block.querySelectorAll(".event-row").forEach((row) => {
-      events.push(
-        normalizeScenarioEvent({
-          id: row.querySelector(".ev-id").value,
-          count: +row.querySelector(".ev-count").value || 1,
-          actor: row.querySelector(".ev-actor").value,
-        })
-      );
+    const emails = [];
+    let order = 0;
+    block.querySelectorAll(".steps-wrap > .event-row, .steps-wrap > .email-row").forEach((row) => {
+      if (row.classList.contains("email-row")) {
+        emails.push({
+          template_id: row.querySelector(".em-tpl").value,
+          to_address: row.querySelector(".em-to").value.trim(),
+          cc: row.querySelector(".em-cc").value.trim(),
+          sort_order: order++,
+        });
+      } else {
+        events.push(
+          normalizeScenarioEvent({
+            id: row.querySelector(".ev-id").value,
+            count: +row.querySelector(".ev-count").value || 1,
+            actor: row.querySelector(".ev-actor").value,
+            sort_order: order++,
+          })
+        );
+      }
     });
     phases.push({
       phase_type: "mitre",
@@ -886,6 +1082,7 @@ function readPhasesFromUI() {
       mitre_tactic: block.querySelector(".ph-mitre").value,
       mitre_techniques: (getTacticById(block.querySelector(".ph-mitre").value)?.techniques) || [],
       events,
+      emails,
     });
   });
   return phases;
@@ -1001,6 +1198,7 @@ async function loadScenarioBuilder(nameOrId) {
     scPhases = (sc.phases || []).map((p) => {
       const synced = syncPhaseWithMitre({ ...p });
       synced.events = (synced.events || []).map(normalizeScenarioEvent);
+      synced.emails = synced.emails || [];
       return synced;
     });
     renderAllPhases();

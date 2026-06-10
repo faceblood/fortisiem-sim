@@ -11,7 +11,7 @@ from .assets import assets_to_actors, load_assets, save_assets, save_scenario_fr
 from .c2 import merge_c2_import, parse_c2_text
 from .db.connection import db_path
 from .loaders import package_root
-from .engine import iter_scenario_stream, run_scenario
+from .engine import build_manual_blocks, execute_manual_block, iter_scenario_stream, run_scenario
 from .loaders import (
     default_templates_path,
     merge_custom_events_import,
@@ -110,6 +110,7 @@ def _scenario_list_payload() -> list[dict]:
                 total_events += len(ph.emails)
             else:
                 total_events += sum(e.count for e in ph.events)
+                total_events += len(ph.emails)
         items.append({
             "id": scenario_id,
             "file": f"{scenario_id}.yml",
@@ -323,6 +324,74 @@ def create_app(templates_path: Path | None = None):
     @app.get("/api/mitre/tactics")
     def api_mitre_tactics():
         return jsonify({"tactics": list_tactics()})
+
+    @app.get("/api/run/plan")
+    def api_run_plan():
+        args = {
+            "scenario": request.args.get("scenario", ""),
+            "phase": request.args.get("phase", ""),
+            "count": request.args.get("count"),
+        }
+        try:
+            _, scenario, options, phase = _parse_run_args(args)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        blocks = build_manual_blocks(
+            scenario,
+            phase_filter=phase,
+            count_override=options.count,
+            email_templates=_email_templates_dict(),
+        )
+        return jsonify({"blocks": blocks, "total": len(blocks)})
+
+    @app.post("/api/run/step")
+    def api_run_step():
+        data = request.get_json(force=True) or {}
+        try:
+            _, scenario, options, phase = _parse_run_args(data)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        step_index = int(data.get("step", 0))
+        blocks = build_manual_blocks(
+            scenario,
+            phase_filter=phase,
+            count_override=options.count,
+            email_templates=_email_templates_dict(),
+        )
+        if step_index < 0 or step_index >= len(blocks):
+            return jsonify({"error": "Paso fuera de rango"}), 400
+        block = blocks[step_index]
+        summary = RunSummary()
+        try:
+            templates = _current_templates()
+            assets = load_assets()
+            result = execute_manual_block(
+                scenario,
+                block,
+                templates,
+                options,
+                summary,
+                email_templates=_email_templates_dict(),
+                smtp_cfg=assets.get("smtp", {}),
+                no_delay=False,
+            )
+        except (KeyError, ValueError, RuntimeError) as exc:
+            return jsonify({"error": str(exc)}), 400
+        return jsonify({
+            "ok": True,
+            "step": step_index,
+            "label": block.get("label", ""),
+            "kind": block.get("kind", ""),
+            "events": result["events"],
+            "email": result["email"],
+            "done": step_index >= len(blocks) - 1,
+            "next_step": step_index + 1 if step_index < len(blocks) - 1 else None,
+            "total": len(blocks),
+            "summary": _summary_dict(summary),
+            "live": not options.dry_run,
+            "target": options.target,
+            "port": options.port,
+        })
 
     @app.get("/api/run/stream")
     def api_run_stream():
