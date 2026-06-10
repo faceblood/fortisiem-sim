@@ -134,13 +134,4 @@ def test_index_serves_html(client):
     assert r.status_code == 200
     assert b"FortiSIEM Sim" in r.data
     assert b"panel-config" in r.data
-
-
-def test_api_run_plan_and_step(client):
-    r = client.get("/api/scenarios")
-    scenario = r.get_json()["scenarios"][0]
-    plan = client.get(f"/api/run/plan?scenario={scenario}").get_json()
-    assert plan["total"] >= 1
-    step = client.post("/api/run/step", json={"scenario": scenario, "step": 0}).get_json()
-    assert step["ok"] is True
-    assert step["step"] == 0
+    assert b"btn-continue" in r.data

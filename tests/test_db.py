@@ -108,37 +108,3 @@ def test_mitre_phase_with_inline_email(sql_db):
     assert len(ph["events"]) == 1
     assert len(ph["emails"]) == 1
     assert ph["emails"][0]["sort_order"] == 1
-
-
-def test_build_manual_blocks_phase_and_email(sql_db):
-    from fortisiem_sim.db.scenarios_repo import save_from_builder
-    from fortisiem_sim.engine import build_manual_blocks
-
-    scenario_id = save_from_builder({
-        "name": "manual-plan-test",
-        "description": "test",
-        "org_id": 1,
-        "use_config_actors": True,
-        "phases": [{
-            "phase_type": "mitre",
-            "name": "initial_access",
-            "description": "Acceso inicial",
-            "mitre_tactic": "TA0001",
-            "events": [{"id": "login_failed", "count": 2, "actor": "", "sort_order": 0}],
-            "emails": [{
-                "template_id": "ir_alert_tabletop",
-                "to_address": "soc@lab.local",
-                "cc": "",
-                "sort_order": 1,
-            }],
-        }],
-    })
-    sc = load_scenario_data(scenario_id)
-    blocks = build_manual_blocks(
-        sc,
-        email_templates={"ir_alert_tabletop": {"name": "Alerta IR", "subject": "[SIM]"}},
-    )
-    assert len(blocks) == 2
-    assert blocks[0]["kind"] == "phase"
-    assert blocks[0]["events"][0]["count"] == 2
-    assert blocks[1]["kind"] == "email"

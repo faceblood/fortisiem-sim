@@ -50,16 +50,20 @@ const state = {
   eventCatalog: [],
   eventsByTactic: {},
   emailCatalog: [],
-  manualPlan: [],
-  manualIndex: 0,
-  manualActive: false,
+  runPhaseNames: [],
+  phaseSequence: null,
+  waitingContinue: false,
 };
 
 /* ========== EJECUTAR ========== */
-function runParams() {
+function isAllPhasesRun() {
+  return !$("run-phase").value;
+}
+
+function runParams(phaseOverride) {
   const p = new URLSearchParams();
   p.set("scenario", $("run-scenario").value);
-  const phase = $("run-phase").value;
+  const phase = phaseOverride !== undefined ? phaseOverride : $("run-phase").value;
   if (phase) p.set("phase", phase);
   const count = $("run-count").value;
   const seed = $("run-seed").value;
@@ -70,143 +74,62 @@ function runParams() {
   return p;
 }
 
-function setRunning(on) {
+function resetPhaseSequence() {
+  state.phaseSequence = null;
+  state.waitingContinue = false;
+  $("btn-continue").style.display = "none";
+}
+
+function setWaitingContinue(on) {
+  state.waitingContinue = on;
+  $("btn-continue").style.display = on ? "block" : "none";
   $("btn-run").disabled = on;
-  $("btn-stop").style.display = on && !state.manualActive ? "block" : "none";
-  if ($("btn-step")) $("btn-step").disabled = on || !state.manualActive || state.manualIndex >= state.manualPlan.length;
+  $("btn-stop").style.display = on ? "block" : "none";
 }
 
-function toggleManualMode() {
-  const manual = $("run-manual").checked;
-  $("run-manual-panel").style.display = manual ? "block" : "none";
-  $("run-sse").disabled = manual;
-  if (manual) $("run-sse").checked = false;
-  if (!manual) resetManualRun();
+function setRunning(on) {
+  if (state.waitingContinue) return;
+  $("btn-run").disabled = on;
+  $("btn-stop").style.display = on ? "block" : "none";
+  if (!on) $("btn-continue").style.display = "none";
 }
 
-function resetManualRun() {
-  state.manualPlan = [];
-  state.manualIndex = 0;
-  state.manualActive = false;
-  $("btn-step").disabled = true;
-  $("run-step-counter").textContent = "";
-  $("run-step-preview").textContent = "Pulsa Instanciar para cargar el plan.";
-}
-
-function renderManualStepPreview() {
-  const block = state.manualPlan[state.manualIndex];
-  const preview = $("run-step-preview");
-  const counter = $("run-step-counter");
-  if (!block) {
-    preview.innerHTML = state.manualPlan.length
-      ? '<span class="manual-done">✓ Escenario completado</span>'
-      : "Sin pasos en el plan.";
-    counter.textContent = state.manualPlan.length
-      ? `Completado · ${state.manualPlan.length} pasos`
-      : "";
-    $("btn-step").disabled = true;
+function onPhaseRunComplete(msg) {
+  const seq = state.phaseSequence;
+  if (!seq?.active) {
+    banner($("run-banner"), msg.live ? "live" : "dry", msg.live
+      ? `Completado: ${msg.summary.sent} enviados`
+      : `Completado: ${msg.summary.total} eventos (dry-run)`);
+    setRunning(false);
     return;
   }
-  const evCount = (block.events || []).reduce((n, e) => n + (+e.count || 1), 0);
-  const detail =
-    block.kind === "email"
-      ? `<div class="meta">Plantilla: <code>${esc(block.template_id)}</code> · ${esc(block.subject || "")}</div>`
-      : block.kind === "phase" && evCount
-        ? `<div class="meta">${evCount} evento(s) syslog en este paso</div>`
-        : block.kind === "phase"
-          ? `<div class="meta">Fase sin eventos syslog (solo transición)</div>`
-          : "";
-  preview.innerHTML = `<div class="manual-step-label">${esc(block.label)}</div>${detail}`;
-  counter.textContent = `Paso ${state.manualIndex + 1} / ${state.manualPlan.length}`;
-  $("btn-step").disabled = false;
-}
-
-function runParamsObject() {
-  const body = Object.fromEntries(runParams());
-  body.send = $("run-send").checked;
-  body.no_spoof = $("run-nospoof").checked;
-  return body;
-}
-
-async function loadManualPlan() {
-  const out = $("run-out");
-  out.innerHTML = "";
-  state.eventCount = 0;
-  state.expectedTotal = 0;
-  $("run-progress").style.display = "block";
-  setRunning(true);
-  try {
-    const data = await api("/api/run/plan?" + runParams().toString());
-    state.manualPlan = data.blocks || [];
-    state.manualIndex = 0;
-    state.manualActive = true;
-    state.expectedTotal = state.manualPlan.reduce((n, b) => {
-      if (b.kind === "email") return n + 1;
-      return n + (b.events || []).reduce((m, e) => m + (+e.count || 1), 0);
-    }, 0);
-    updateRunCounter();
-    renderManualStepPreview();
+  const current = seq.names[seq.index];
+  const remaining = seq.names.length - seq.index - 1;
+  if (remaining > 0) {
+    setRunning(false);
+    setWaitingContinue(true);
     banner(
       $("run-banner"),
-      "dry",
-      state.manualPlan.length
-        ? `Modo manual: ${state.manualPlan.length} pasos. Pulsa «Ejecutar paso ▶».`
-        : "Sin pasos para este escenario/fase."
+      msg.live ? "live" : "dry",
+      `Fase «${current}» completada. Quedan ${remaining}. Pulsa Continuar ▶`
     );
-  } catch (e) {
-    banner($("run-banner"), "live", "ERROR: " + e.message);
-    resetManualRun();
+  } else {
+    banner($("run-banner"), msg.live ? "live" : "dry", msg.live
+      ? `Escenario completo: ${msg.summary.sent} enviados en ${seq.names.length} fases`
+      : `Escenario completo: ${seq.names.length} fases (dry-run)`);
+    resetPhaseSequence();
+    setRunning(false);
   }
-  setRunning(false);
 }
 
-async function executeManualStep() {
-  if (!state.manualActive || state.manualIndex >= state.manualPlan.length) return;
-  const out = $("run-out");
-  setRunning(true);
-  $("btn-step").disabled = true;
-  const body = runParamsObject();
-  body.step = state.manualIndex;
-  try {
-    const res = await api("/api/run/step", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    out.insertAdjacentHTML(
-      "beforeend",
-      `<div class="line-phase">${esc(res.label)}</div>`
-    );
-    (res.events || []).forEach((e) => {
-      renderRunEvent(e, out);
-      state.eventCount++;
-    });
-    if (res.email) {
-      state.eventCount++;
-      const em = res.email;
-      out.insertAdjacentHTML(
-        "beforeend",
-        `<div class="line-email">📧 [${em.dry_run ? "DRY" : em.sent ? "SENT" : "FAIL"}] ${esc(em.subject)} → ${esc(em.to_address)}</div>`
-      );
-    }
-    updateRunCounter();
-    out.scrollTop = out.scrollHeight;
-    state.manualIndex++;
-    if (res.done) {
-      banner(
-        $("run-banner"),
-        res.live ? "live" : "dry",
-        res.live ? `Completado · ${res.summary.sent} enviados` : `Completado · ${res.summary.total} acciones`
-      );
-      renderManualStepPreview();
-    } else {
-      banner($("run-banner"), res.live ? "live" : "dry", `Paso ${state.manualIndex}/${res.total} ejecutado. Siguiente listo.`);
-      renderManualStepPreview();
-    }
-  } catch (e) {
-    banner($("run-banner"), "live", "ERROR: " + e.message);
-  }
-  setRunning(false);
+function continueNextPhase() {
+  const seq = state.phaseSequence;
+  if (!seq?.active || !state.waitingContinue) return;
+  seq.index += 1;
+  state.waitingContinue = false;
+  $("btn-continue").style.display = "none";
+  if ($("run-sse").checked) runSse({ phaseName: seq.names[seq.index], append: true });
+  else runBatch({ phaseName: seq.names[seq.index], append: true });
 }
 
 function updateRunCounter() {
@@ -240,9 +163,11 @@ async function loadRunPhases() {
   const name = $("run-scenario").value;
   if (!name) return;
   const sc = await api("/api/scenarios/" + encodeURIComponent(name));
+  state.runPhaseNames = (sc.phases || []).map((p) => p.name);
   $("run-phase").innerHTML =
     '<option value="">(todas)</option>' +
     sc.phases.map((p) => `<option value="${p.name}">${p.name} (~${p.total})</option>`).join("");
+  resetPhaseSequence();
 }
 
 function stopRun() {
@@ -250,29 +175,50 @@ function stopRun() {
     state.es.close();
     state.es = null;
   }
+  resetPhaseSequence();
   setRunning(false);
   banner($("run-banner"), "dry", "Detenido por el usuario.");
 }
 
-function runSse() {
+function startRun() {
+  resetPhaseSequence();
+  if (isAllPhasesRun() && state.runPhaseNames.length > 1) {
+    state.phaseSequence = {
+      active: true,
+      index: 0,
+      names: state.runPhaseNames.slice(),
+    };
+    if ($("run-sse").checked) runSse({ phaseName: state.runPhaseNames[0], append: false });
+    else runBatch({ phaseName: state.runPhaseNames[0], append: false });
+    return;
+  }
+  if ($("run-sse").checked) runSse({ append: false });
+  else runBatch({ append: false });
+}
+
+function runSse({ phaseName, append } = {}) {
   const out = $("run-out");
-  out.innerHTML = "";
-  state.eventCount = 0;
-  state.expectedTotal = 0;
+  if (!append) {
+    out.innerHTML = "";
+    state.eventCount = 0;
+    state.expectedTotal = 0;
+  }
   updateRunCounter();
   $("run-progress").style.display = "block";
   setRunning(true);
-  banner($("run-banner"), "stream", "Conectando stream SSE…");
+  const label = phaseName || $("run-phase").value || "(todas)";
+  banner($("run-banner"), "stream", `Conectando SSE · ${label}…`);
 
-  state.es = new EventSource("/api/run/stream?" + runParams().toString());
+  state.es = new EventSource("/api/run/stream?" + runParams(phaseName || "").toString());
   state.es.onmessage = (ev) => {
     const msg = JSON.parse(ev.data);
     if (msg.type === "start") {
-      state.expectedTotal = msg.expected || 0;
+      if (!append) state.expectedTotal = msg.expected || 0;
+      else state.expectedTotal += msg.expected || 0;
       updateRunCounter();
       banner($("run-banner"), msg.live ? "live" : "dry", msg.live
-        ? `LIVE SSE → ${msg.target}:${msg.port}`
-        : "DRY-RUN SSE (delays reales)");
+        ? `LIVE SSE → ${msg.target}:${msg.port} · ${label}`
+        : `DRY-RUN SSE · ${label}`);
     } else if (msg.type === "phase") {
       out.insertAdjacentHTML(
         "beforeend",
@@ -292,17 +238,15 @@ function runSse() {
       state.eventCount++;
       updateRunCounter();
     } else if (msg.type === "done") {
-      banner($("run-banner"), msg.live ? "live" : "dry", msg.live
-        ? `Completado: ${msg.summary.sent} enviados`
-        : `Completado: ${msg.summary.total} eventos (dry-run)`);
       state.es.close();
       state.es = null;
-      setRunning(false);
+      onPhaseRunComplete(msg);
     } else if (msg.type === "error") {
       banner($("run-banner"), "live", "ERROR: " + msg.message);
       out.insertAdjacentHTML("beforeend", `<div class="line-dry">ERROR: ${esc(msg.message)}</div>`);
       state.es.close();
       state.es = null;
+      resetPhaseSequence();
       setRunning(false);
     }
   };
@@ -311,16 +255,22 @@ function runSse() {
       state.es.close();
       state.es = null;
     }
+    resetPhaseSequence();
     setRunning(false);
   };
 }
 
-async function runBatch() {
+async function runBatch({ phaseName, append } = {}) {
   const out = $("run-out");
-  out.textContent = "Ejecutando (batch)…";
-  $("run-progress").style.display = "none";
+  if (!append) {
+    out.textContent = "Ejecutando (batch)…";
+    state.eventCount = 0;
+  } else {
+    out.insertAdjacentHTML("beforeend", `<div class="line-phase">— siguiente fase —</div>`);
+  }
+  $("run-progress").style.display = append ? "block" : "none";
   setRunning(true);
-  const body = Object.fromEntries(runParams());
+  const body = Object.fromEntries(runParams(phaseName || ""));
   body.send = $("run-send").checked;
   body.no_spoof = $("run-nospoof").checked;
   try {
@@ -329,29 +279,28 @@ async function runBatch() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-    banner($("run-banner"), res.live ? "live" : "dry", res.live
-      ? `LIVE: ${res.summary.sent} enviados`
-      : `DRY-RUN: ${res.summary.total} eventos`);
-    out.innerHTML = "";
-    state.eventCount = res.events.length;
+    if (!append) out.innerHTML = "";
+    res.events.forEach((e) => {
+      renderRunEvent(e, out);
+      state.eventCount++;
+    });
     $("run-counter").textContent = state.eventCount;
-    res.events.forEach((e) => renderRunEvent(e, out));
+    onPhaseRunComplete({
+      live: res.live,
+      summary: res.summary,
+    });
   } catch (e) {
     banner($("run-banner"), "live", "ERROR: " + e.message);
-    out.textContent = e.message;
+    if (!append) out.textContent = e.message;
+    resetPhaseSequence();
+    setRunning(false);
   }
-  setRunning(false);
 }
 
-$("btn-run").addEventListener("click", () => {
-  if ($("run-manual").checked) loadManualPlan();
-  else if ($("run-sse").checked) runSse();
-  else runBatch();
-});
-$("btn-step").addEventListener("click", executeManualStep);
-$("run-manual").addEventListener("change", toggleManualMode);
+$("btn-run").addEventListener("click", startRun);
+$("btn-continue").addEventListener("click", continueNextPhase);
 $("btn-stop").addEventListener("click", stopRun);
-toggleManualMode();
+$("run-phase").addEventListener("change", resetPhaseSequence);
 
 /* ========== CONFIG ========== */
 function renderUserChips(users) {

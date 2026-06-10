@@ -32,15 +32,10 @@
           <div><label>seed</label><input id="run-seed" type="number" placeholder="—"></div>
         </div>
         <div class="check"><input type="checkbox" id="run-sse" checked><label for="run-sse">SSE en vivo (delays reales)</label></div>
-        <div class="check"><input type="checkbox" id="run-manual"><label for="run-manual">Modo manual (tabletop — play por fase/correo)</label></div>
         <div class="check"><input type="checkbox" id="run-send"><label for="run-send">Enviar syslog + correos (--send)</label></div>
         <div class="check"><input type="checkbox" id="run-nospoof"><label for="run-nospoof">Sin spoofing</label></div>
-        <div id="run-manual-panel" class="manual-panel" style="display:none">
-          <div id="run-step-preview" class="manual-step-preview">Pulsa Instanciar para cargar el plan.</div>
-          <div class="meta" id="run-step-counter"></div>
-          <button type="button" class="btn btn-primary" style="width:100%;margin-top:8px" id="btn-step" disabled>Ejecutar paso ▶</button>
-        </div>
         <button type="button" class="btn btn-primary" style="width:100%;margin-top:8px" id="btn-run">Instanciar fase ▶</button>
+        <button type="button" class="btn btn-success" style="width:100%;margin-top:6px;display:none" id="btn-continue">Continuar ▶</button>
         <button type="button" class="btn btn-danger" style="width:100%;margin-top:6px;display:none" id="btn-stop">Detener ■</button>
       </div>
     </div>
