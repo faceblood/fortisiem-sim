@@ -17,7 +17,16 @@ from .loaders import (
     merge_custom_events_import,
     parse_events_import,
 )
-from .mitre import build_event_catalog, index_events_by_tactic, list_tactics
+from .mitre import (
+    build_event_catalog,
+    index_events_by_tactic,
+    list_tactics,
+    phase_run_display_label,
+    phase_tactic_id,
+    phase_tactic_name,
+    phase_technique_ids,
+    phase_technique_label,
+)
 from .models import EmittedEmail, EmittedEvent, RunSummary, Scenario, SendOptions
 from .storage import (
     enable_sql_storage,
@@ -67,6 +76,12 @@ def _summary_dict(summary: RunSummary) -> dict:
     return {"total": summary.total, "sent": summary.sent, "dry_run": summary.dry_run}
 
 
+def _phase_run_total(ph) -> int:
+    if getattr(ph, "phase_type", "mitre") == "email":
+        return len(ph.emails)
+    return sum(e.count for e in ph.events) + len(ph.emails)
+
+
 def _scenario_payload(scenario_id: str) -> dict:
     sc = load_scenario_data(scenario_id)
     return {
@@ -76,8 +91,14 @@ def _scenario_payload(scenario_id: str) -> dict:
         "phases": [
             {
                 "name": ph.name,
+                "label": phase_technique_label(ph),
+                "display_label": phase_run_display_label(ph),
                 "description": ph.description,
-                "total": sum(e.count for e in ph.events),
+                "phase_type": getattr(ph, "phase_type", "mitre"),
+                "mitre_tactic": phase_tactic_id(ph) or ph.mitre_tactic,
+                "tactic_name": phase_tactic_name(ph),
+                "mitre_techniques": phase_technique_ids(ph),
+                "total": _phase_run_total(ph),
                 "events": [{"id": e.id, "count": e.count, "actor": e.actor} for e in ph.events],
             }
             for ph in sc.phases

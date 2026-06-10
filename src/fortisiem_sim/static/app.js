@@ -51,6 +51,7 @@ const state = {
   eventsByTactic: {},
   emailCatalog: [],
   runPhaseNames: [],
+  runPhasesMeta: [],
   phaseSequence: null,
   waitingContinue: false,
 };
@@ -94,6 +95,11 @@ function setRunning(on) {
   if (!on) $("btn-continue").style.display = "none";
 }
 
+function phaseRunLabel(name) {
+  const ph = state.runPhasesMeta.find((p) => p.name === name);
+  return ph?.display_label || ph?.label || name;
+}
+
 function onPhaseRunComplete(msg) {
   const seq = state.phaseSequence;
   if (!seq?.active) {
@@ -103,7 +109,7 @@ function onPhaseRunComplete(msg) {
     setRunning(false);
     return;
   }
-  const current = seq.names[seq.index];
+  const current = phaseRunLabel(seq.names[seq.index]);
   const remaining = seq.names.length - seq.index - 1;
   if (remaining > 0) {
     setRunning(false);
@@ -111,7 +117,7 @@ function onPhaseRunComplete(msg) {
     banner(
       $("run-banner"),
       msg.live ? "live" : "dry",
-      `Fase «${current}» completada. Quedan ${remaining}. Pulsa Continuar ▶`
+      `Fase ${current} completada. Quedan ${remaining}. Pulsa Continuar ▶`
     );
   } else {
     banner($("run-banner"), msg.live ? "live" : "dry", msg.live
@@ -163,10 +169,16 @@ async function loadRunPhases() {
   const name = $("run-scenario").value;
   if (!name) return;
   const sc = await api("/api/scenarios/" + encodeURIComponent(name));
-  state.runPhaseNames = (sc.phases || []).map((p) => p.name);
+  state.runPhasesMeta = sc.phases || [];
+  state.runPhaseNames = state.runPhasesMeta.map((p) => p.name);
   $("run-phase").innerHTML =
     '<option value="">(todas)</option>' +
-    sc.phases.map((p) => `<option value="${p.name}">${p.name} (~${p.total})</option>`).join("");
+    state.runPhasesMeta
+      .map(
+        (p) =>
+          `<option value="${esc(p.name)}">${esc(p.display_label || p.label || p.name)} (~${p.total})</option>`
+      )
+      .join("");
   resetPhaseSequence();
 }
 
@@ -206,7 +218,7 @@ function runSse({ phaseName, append } = {}) {
   updateRunCounter();
   $("run-progress").style.display = "block";
   setRunning(true);
-  const label = phaseName || $("run-phase").value || "(todas)";
+  const label = phaseName ? phaseRunLabel(phaseName) : isAllPhasesRun() ? "(todas)" : phaseRunLabel($("run-phase").value);
   banner($("run-banner"), "stream", `Conectando SSE · ${label}…`);
 
   state.es = new EventSource("/api/run/stream?" + runParams(phaseName || "").toString());

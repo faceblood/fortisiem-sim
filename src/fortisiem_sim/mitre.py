@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 # Formato de plantilla → sistema origen mostrado en GUI / catálogo
@@ -324,6 +325,88 @@ def guess_tactic_from_phase(phase_name: str, description: str = "") -> str:
         if t["id"] in text:
             return t["id"]
     return ""
+
+
+_TECHNIQUE_ID = re.compile(r"\bT\d{4}(?:\.\d{3})?\b")
+
+
+def _dedupe_techniques(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in items:
+        tid = item.strip().upper()
+        if not tid or tid in seen:
+            continue
+        seen.add(tid)
+        out.append(tid)
+    return out
+
+
+def phase_technique_ids(phase: Any) -> list[str]:
+    """IDs de técnica MITRE ATT&CK asociados a una fase del escenario."""
+    techs = _dedupe_techniques(list(getattr(phase, "mitre_techniques", None) or []))
+    if techs:
+        return techs
+
+    desc = str(getattr(phase, "description", "") or "")
+    name = str(getattr(phase, "name", "") or "")
+    from_desc = _dedupe_techniques(_TECHNIQUE_ID.findall(f"{desc} {name}"))
+    if from_desc:
+        return from_desc
+
+    tactic_id = str(getattr(phase, "mitre_tactic", "") or "").strip()
+    if not tactic_id:
+        tactic_id = guess_tactic_from_phase(name, desc)
+    if tactic_id:
+        tactic = tactic_by_id(tactic_id)
+        if tactic and tactic.get("techniques"):
+            return list(tactic["techniques"])
+
+    return []
+
+
+def phase_tactic_id(phase: Any) -> str:
+    """ID de táctica MITRE (TAxxxx) asociada a la fase."""
+    if getattr(phase, "phase_type", "mitre") == "email":
+        return ""
+    tactic_id = str(getattr(phase, "mitre_tactic", "") or "").strip().upper()
+    if tactic_id:
+        return tactic_id
+    name = str(getattr(phase, "name", "") or "")
+    desc = str(getattr(phase, "description", "") or "")
+    return guess_tactic_from_phase(name, desc)
+
+
+def phase_tactic_name(phase: Any) -> str:
+    """Nombre legible de la táctica MITRE (p. ej. Initial Access)."""
+    if getattr(phase, "phase_type", "mitre") == "email":
+        return "Correo"
+    tid = phase_tactic_id(phase)
+    if not tid:
+        return ""
+    tactic = tactic_by_id(tid)
+    return str(tactic["name"]) if tactic else tid
+
+
+def phase_technique_label(phase: Any) -> str:
+    """Solo IDs de técnica MITRE (p. ej. T1078, T1110)."""
+    if getattr(phase, "phase_type", "mitre") == "email":
+        return "Correo"
+    techs = phase_technique_ids(phase)
+    return ", ".join(techs) if techs else "—"
+
+
+def phase_run_display_label(phase: Any) -> str:
+    """Etiqueta para UI: táctica + técnicas."""
+    if getattr(phase, "phase_type", "mitre") == "email":
+        return "Correo"
+    tactic = phase_tactic_name(phase)
+    techs = phase_technique_label(phase)
+    if tactic and techs and techs != "—":
+        return f"{tactic} · {techs}"
+    if tactic:
+        return tactic
+    return techs
 
 
 _sync_suggested_events_from_catalog()

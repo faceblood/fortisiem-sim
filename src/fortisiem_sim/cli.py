@@ -220,12 +220,14 @@ def main(argv: list[str] | None = None) -> int:
             print("ERROR: --list-phases requiere un escenario", file=sys.stderr)
             return 1
         from .storage import load_scenario_data
+        from .mitre import phase_run_display_label, phase_technique_label
 
         scenario = load_scenario_data(config_id)
         print(f"Fases en {config_id}:")
         for phase in scenario.phases:
-            n = sum(e.count for e in phase.events)
-            print(f"  {phase.name:<28} {len(phase.events)} tipos, ~{n} eventos  # {phase.description}")
+            n = sum(e.count for e in phase.events) + len(phase.emails)
+            label = phase_run_display_label(phase)
+            print(f"  {label:<48} {len(phase.events)} tipos, ~{n} eventos  # {phase.description}")
         return 0
 
     if args.validate:

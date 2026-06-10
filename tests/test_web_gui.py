@@ -135,3 +135,18 @@ def test_index_serves_html(client):
     assert b"FortiSIEM Sim" in r.data
     assert b"panel-config" in r.data
     assert b"btn-continue" in r.data
+
+
+def test_api_scenario_phases_use_mitre_technique_labels(client):
+    r = client.get("/api/scenarios")
+    scenario = r.get_json()["scenarios"][0]
+    data = client.get(f"/api/scenarios/{scenario}").get_json()
+    assert data["phases"]
+    ph = data["phases"][0]
+    assert "label" in ph
+    assert "display_label" in ph
+    assert "tactic_name" in ph
+    assert "mitre_techniques" in ph
+    assert ph["display_label"]
+    assert "recon_and_access" not in ph["display_label"]
+    assert ph["tactic_name"]

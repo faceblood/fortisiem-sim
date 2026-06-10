@@ -9,8 +9,13 @@ from fortisiem_sim.mitre import (
     guess_tactic_from_phase,
     index_events_by_tactic,
     list_tactics,
+    phase_technique_ids,
+    phase_technique_label,
+    phase_run_display_label,
+    phase_tactic_name,
     tactic_by_id,
 )
+from fortisiem_sim.models import ScenarioPhase
 
 
 def test_list_tactics_has_enterprise_kill_chain():
@@ -31,6 +36,31 @@ def test_tactic_by_id_and_slug():
 def test_guess_tactic_from_ransomware_phase():
     assert guess_tactic_from_phase("recon_and_access", "") == "TA0001"
     assert guess_tactic_from_phase("lateral_movement", "") == "TA0008"
+
+
+def test_phase_technique_label_from_tactic_and_description():
+    ph = ScenarioPhase(
+        name="recon_and_access",
+        description="T1078 — Acceso inicial",
+        mitre_tactic="TA0001",
+    )
+    assert "T1078" in phase_technique_label(ph)
+    assert phase_technique_label(ph) == ", ".join(phase_technique_ids(ph))
+
+    legacy = ScenarioPhase(
+        name="execution",
+        description="T1059 / T1003 — Ejecución simulada",
+    )
+    assert phase_technique_label(legacy) == "T1059, T1003"
+
+
+def test_phase_run_display_label_includes_tactic_name():
+    ph = ScenarioPhase(
+        name="recon_and_access",
+        description="T1078 — Acceso inicial",
+        mitre_tactic="TA0001",
+    )
+    assert phase_run_display_label(ph) == "Initial Access · T1078"
 
 
 def test_all_templates_mapped_to_mitre():
