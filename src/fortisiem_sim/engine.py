@@ -94,10 +94,52 @@ def print_summary(summary: RunSummary, *, dry_run: bool) -> None:
 # Emisión
 # --------------------------------------------------------------------------- #
 
+def _sleep_ms(ms: int) -> None:
+    if ms > 0:
+        time.sleep(ms / 1000.0)
+
+
 def _sleep(delay: float, jitter: float) -> None:
     total = max(0.0, delay) + (random.uniform(0, jitter) if jitter > 0 else 0.0)
     if total > 0:
         time.sleep(total)
+
+
+def _emit_chain_steps(
+    scenario: Scenario,
+    chain_id: str,
+    templates: dict[str, EventTemplate],
+    options: SendOptions,
+    *,
+    phase_name: str,
+    actor_name: str,
+    base_overrides: dict[str, str] | None,
+    seq: int,
+    timeline_total: int,
+    no_delay: bool,
+    out_fp,
+    summary: RunSummary,
+) -> Iterator[tuple[str, EmittedEvent]]:
+    from .db.activity_chains_repo import load_chain
+
+    chain = load_chain(chain_id)
+    if not chain:
+        raise KeyError(f"Cadena no encontrada: {chain_id}")
+    yield from chain.emit(
+        scenario,
+        templates,
+        options,
+        phase_name=phase_name,
+        actor_name=actor_name,
+        base_overrides=base_overrides,
+        sequence_start=seq,
+        timeline_total=timeline_total,
+        no_delay=no_delay,
+        out_fp=out_fp,
+        summary=summary,
+        emit_one=emit_one,
+        sleep_ms=_sleep_ms,
+    )
 
 
 def emit_one(
@@ -146,14 +188,27 @@ def emit_one(
 
 
 def _count_timeline_events(scenario: Scenario, phase_filter: str) -> int:
+    from .db.activity_chains_repo import step_counts_by_id
+
+    chain_counts = step_counts_by_id()
     total = 0
     for phase in scenario.phases:
         if phase_filter and phase.name != phase_filter:
             continue
         if getattr(phase, "phase_type", "mitre") == "email":
             total += len(phase.emails)
+        elif getattr(phase, "phase_type", "mitre") == "chain":
+            for event in phase.events:
+                chain_id = str(getattr(event, "chain_id", "") or "").strip()
+                if chain_id:
+                    total += max(1, chain_counts.get(chain_id, 1))
         else:
-            total += sum(e.count for e in phase.events)
+            for event in phase.events:
+                chain_id = str(getattr(event, "chain_id", "") or "").strip()
+                if chain_id:
+                    total += max(1, chain_counts.get(chain_id, 1))
+                else:
+                    total += max(1, event.count)
             total += len(phase.emails)
     return total
 
@@ -300,6 +355,31 @@ def iter_scenario_stream(
                     ),
                 )
             continue
+        if getattr(phase, "phase_type", "mitre") == "chain":
+            for event in phase.events:
+                chain_id = str(getattr(event, "chain_id", "") or "").strip()
+                if not chain_id:
+                    continue
+                actor = event.actor or scenario.actors.default_profile
+                step_count = 0
+                for kind, payload in _emit_chain_steps(
+                    scenario,
+                    chain_id,
+                    templates,
+                    options,
+                    phase_name=phase.name,
+                    actor_name=actor,
+                    base_overrides=event.overrides,
+                    seq=seq,
+                    timeline_total=max(timeline_total, 1),
+                    no_delay=no_delay,
+                    out_fp=out_fp,
+                    summary=summary,
+                ):
+                    yield kind, payload
+                    step_count += 1
+                seq += step_count
+            continue
         for kind, step in _iter_mitre_phase_steps(phase):
             if kind == "email":
                 tmpl_dict = (email_templates or {}).get(step.template_id)
@@ -323,13 +403,34 @@ def iter_scenario_stream(
                 )
                 continue
             event = step
+            chain_id = str(getattr(event, "chain_id", "") or "").strip()
+            actor = event.actor or scenario.actors.default_profile
+            if chain_id:
+                step_count = 0
+                for kind, payload in _emit_chain_steps(
+                    scenario,
+                    chain_id,
+                    templates,
+                    options,
+                    phase_name=phase.name,
+                    actor_name=actor,
+                    base_overrides=event.overrides,
+                    seq=seq,
+                    timeline_total=max(timeline_total, 1),
+                    no_delay=no_delay,
+                    out_fp=out_fp,
+                    summary=summary,
+                ):
+                    yield kind, payload
+                    step_count += 1
+                seq += step_count
+                continue
             tmpl = templates.get(event.id)
             if not tmpl:
                 raise KeyError(f"Plantilla no encontrada: {event.id}")
             count = max(1, options.count if options.count is not None else event.count)
             delay = options.delay or (event.delay if event.delay is not None else lab.default_delay)
             jitter = options.jitter or (event.jitter if event.jitter is not None else lab.default_jitter)
-            actor = event.actor or scenario.actors.default_profile
             for i in range(count):
                 yield (
                     "event",

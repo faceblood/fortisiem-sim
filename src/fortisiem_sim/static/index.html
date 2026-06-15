@@ -10,9 +10,13 @@
 <header>
   <h1>FortiSIEM Sim</h1>
   <span class="tag">lab · org 1 · 10.255.9.3:514</span>
+  <span class="tag" id="storage-badge">SQLite</span>
+  <span class="tag" id="sql-stats"></span>
   <nav class="tabs">
     <button type="button" data-tab="run" class="active">Ejecutar</button>
     <button type="button" data-tab="config">Config</button>
+    <button type="button" data-tab="events">Eventos</button>
+    <button type="button" data-tab="activity">Cadenas</button>
     <button type="button" data-tab="scenario">Escenario</button>
   </nav>
 </header>
@@ -59,7 +63,7 @@
         <input id="cfg-domain" placeholder="lab.local">
         <label>Dominios adicionales (uno por línea)</label>
         <textarea id="cfg-domains" rows="3" placeholder="lab.local&#10;vsphere.local"></textarea>
-        <label>Usuarios AD</label>
+        <label>Usuarios AD (usuario · email)</label>
         <div class="row">
           <input id="cfg-user-new" placeholder="nuevo.usuario">
           <button type="button" class="btn btn-ghost btn-sm" id="btn-add-user">+ Añadir</button>
@@ -75,6 +79,8 @@
         </div>
         <label>IPs C2 (una por línea)</label>
         <textarea id="cfg-c2-ips" rows="3" placeholder="203.0.113.50&#10;203.0.113.66"></textarea>
+        <label>Dominios C2 (una por línea)</label>
+        <textarea id="cfg-c2-domains" rows="3" placeholder="cdn-update-security.example"></textarea>
         <label>URIs C2 — IOC HTTP(S) (una por línea)</label>
         <textarea id="cfg-c2-uris" rows="4" placeholder="https://malware-c2.example.com/gate"></textarea>
         <div class="row" style="margin-top:8px">
@@ -136,6 +142,234 @@
   </div>
 </section>
 
+<!-- ========== EVENTOS ========== -->
+<section id="panel-events" class="panel">
+  <div id="events-banner"></div>
+  <div class="mode-toggle" style="margin-bottom:12px">
+    <button type="button" id="events-mode-templates" class="active">Plantillas de evento</button>
+    <button type="button" id="events-mode-commands">Comandos Linux</button>
+  </div>
+  <div id="events-view-templates" class="events-layout">
+    <div class="events-list-pane card">
+      <h2>Catálogo <span class="pill" id="events-count">0</span></h2>
+      <label>Buscar</label>
+      <input id="events-search" type="search" placeholder="id, nombre, técnica…">
+      <div class="row" style="margin-top:8px">
+        <div>
+          <label>Sistema</label>
+          <select id="events-filter-system">
+            <option value="">Todos</option>
+            <option value="fortigate">FortiGate</option>
+            <option value="windows">Windows</option>
+            <option value="linux">Linux</option>
+            <option value="fortiedr">FortiEDR</option>
+            <option value="vmware">VMware</option>
+            <option value="fortimail">FortiMail</option>
+          </select>
+        </div>
+        <div>
+          <label>Categoría</label>
+          <select id="events-filter-category">
+            <option value="">Todas</option>
+            <option value="vpn">vpn</option>
+            <option value="traffic">traffic</option>
+            <option value="generic">generic</option>
+          </select>
+        </div>
+        <div>
+          <label>Táctica MITRE</label>
+          <select id="events-filter-tactic"><option value="">Todas</option></select>
+        </div>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <button type="button" class="btn btn-ghost btn-sm" id="btn-events-refresh">↻ Actualizar</button>
+        <button type="button" class="btn btn-primary btn-sm" id="btn-events-new">+ Nuevo evento</button>
+      </div>
+      <div id="events-list" class="events-list"></div>
+    </div>
+    <div class="events-detail-pane card">
+      <h2 id="events-detail-title">Detalle del evento</h2>
+      <p class="meta" id="events-detail-meta">Selecciona un evento de la lista o crea uno nuevo.</p>
+      <div id="events-editor" style="display:none">
+        <div class="row">
+          <div><label>ID</label><input id="ev-id" readonly></div>
+          <div><label>Nombre</label><input id="ev-name"></div>
+        </div>
+        <div class="row">
+          <div>
+            <label>Formato</label>
+            <select id="ev-format">
+              <option value="syslog_generic">syslog_generic</option>
+              <option value="fortigate">fortigate</option>
+              <option value="linux_auth">linux_auth</option>
+              <option value="windows_security">windows_security</option>
+              <option value="cef">cef</option>
+              <option value="fortiedr_cef">fortiedr_cef</option>
+              <option value="nginx_apache">nginx_apache</option>
+              <option value="esxi_vcenter">esxi_vcenter</option>
+              <option value="docker">docker</option>
+              <option value="ot_scada">ot_scada</option>
+            </select>
+          </div>
+          <div><label>Sistema origen</label><input id="ev-source" placeholder="fortigate, windows…"></div>
+          <div><label>Categoría</label><input id="ev-category" placeholder="vpn, traffic…"></div>
+        </div>
+        <div class="row">
+          <div><label>Severidad</label><input id="ev-severity" placeholder="info, notice, medium…"></div>
+          <div><label>Acción</label><input id="ev-action" placeholder="login, detect…"></div>
+          <div><label>Peso</label><input id="ev-weight" type="number" min="1" max="100" value="5"></div>
+        </div>
+        <div class="row">
+          <div><label>Grupo</label><input id="ev-group" placeholder="event_group"></div>
+          <div><label>TTP slug</label><input id="ev-ttp" placeholder="initial-access, execution…"></div>
+          <div><label>PRI syslog</label><input id="ev-pri" type="number" value="134"></div>
+        </div>
+        <label>Hostname syslog</label>
+        <input id="ev-syslog-host" placeholder="{{hostname}} o {{devname}}">
+        <label>Tags (coma)</label>
+        <input id="ev-tags" placeholder="fortigate,vpn,sslvpn">
+        <label>Plantilla (body)</label>
+        <textarea id="ev-body" rows="10" class="mono"></textarea>
+        <details class="card" style="margin-top:12px;padding:10px">
+          <summary>MITRE ATT&amp;CK — tácticas y técnicas</summary>
+          <p class="meta">Marca las tácticas y edita las técnicas (T1078, T1133…). El slug TTP puede rellenar MITRE al guardar si dejas tácticas vacías.</p>
+          <div id="ev-tactics-grid" class="tactics-grid"></div>
+          <label>Técnicas (coma o una por línea)</label>
+          <textarea id="ev-techniques" rows="3" placeholder="T1078, T1133"></textarea>
+          <div id="ev-mitre-preview" class="mitre-preview"></div>
+        </details>
+        <div class="row" style="margin-top:12px">
+          <button type="button" class="btn btn-success" id="btn-ev-save">Guardar cambios</button>
+          <button type="button" class="btn btn-ghost" id="btn-ev-clone">Duplicar</button>
+          <button type="button" class="btn btn-danger" id="btn-ev-delete">Eliminar</button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div id="events-view-commands" class="events-layout" style="display:none">
+    <div class="events-list-pane card">
+      <h2>Comandos shell <span class="pill" id="cmd-count">0</span></h2>
+      <p class="meta">Pool <code>linux_shell</code> — usados en plantillas Linux (<code>{command_line}</code>). Etiqueta legítimo vs ilegítimo para reglas SOC.</p>
+      <label>Buscar</label>
+      <input id="cmd-search" type="search" placeholder="comando, categoría…">
+      <div class="row" style="margin-top:8px">
+        <div>
+          <label>Legitimidad</label>
+          <select id="cmd-filter-legit">
+            <option value="">Todos</option>
+            <option value="legitimate">Legítimo</option>
+            <option value="illegitimate">Ilegítimo</option>
+          </select>
+        </div>
+        <div>
+          <label>Categoría</label>
+          <select id="cmd-filter-category"><option value="">Todas</option></select>
+        </div>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <button type="button" class="btn btn-ghost btn-sm" id="btn-cmd-refresh">↻ Actualizar</button>
+        <button type="button" class="btn btn-primary btn-sm" id="btn-cmd-new">+ Comando</button>
+      </div>
+      <p class="meta" id="cmd-stats"></p>
+      <div id="cmd-list" class="events-list"></div>
+    </div>
+    <div class="events-detail-pane card">
+      <h2 id="cmd-detail-title">Detalle del comando</h2>
+      <p class="meta" id="cmd-detail-meta">Selecciona un comando o crea uno nuevo.</p>
+      <div id="cmd-editor" style="display:none">
+        <label>Comando</label>
+        <textarea id="cmd-value" rows="4" class="mono" placeholder="systemctl status sshd"></textarea>
+        <div class="row">
+          <div>
+            <label>Legitimidad</label>
+            <select id="cmd-legitimacy">
+              <option value="legitimate">Legítimo — actividad admin/ops normal</option>
+              <option value="illegitimate">Ilegítimo — sospechoso o malicioso</option>
+            </select>
+          </div>
+          <div><label>Categoría</label><input id="cmd-category" placeholder="admin, reverse-shell…"></div>
+        </div>
+        <label>Descripción</label>
+        <input id="cmd-description" placeholder="Qué representa este comando en el lab">
+        <div class="row" style="margin-top:12px">
+          <button type="button" class="btn btn-success" id="btn-cmd-save">Guardar</button>
+          <button type="button" class="btn btn-danger" id="btn-cmd-delete">Eliminar</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ========== CADENAS LINUX ========== -->
+<section id="panel-activity" class="panel">
+  <div id="act-banner"></div>
+  <div class="activity-layout">
+    <div class="events-list-pane card">
+      <h2>Cadenas Linux <span class="pill" id="act-count">0</span></h2>
+      <p class="meta">Logs agrupados por <strong>legítimas</strong>, <strong>ilegítimas</strong> o <strong>mixtas</strong>. Cada cadena porta sus logs editables.</p>
+      <label>Buscar</label>
+      <input id="act-search" type="search" placeholder="nombre, id…">
+      <div class="row" style="margin-top:8px">
+        <div>
+          <label>Grupo</label>
+          <select id="act-filter-legit">
+            <option value="">Todos los grupos</option>
+            <option value="legitimate">Legítimas</option>
+            <option value="illegitimate">Ilegítimas</option>
+            <option value="mixed">Mixtas</option>
+          </select>
+        </div>
+        <div>
+          <label>Categoría</label>
+          <select id="act-filter-category">
+            <option value="">Todas las categorías</option>
+          </select>
+        </div>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <button type="button" class="btn btn-ghost btn-sm" id="btn-act-refresh">↻ Actualizar</button>
+        <button type="button" class="btn btn-primary btn-sm" id="btn-act-new-mixed">+ Cadena mixta</button>
+        <button type="button" class="btn btn-ghost btn-sm" id="btn-act-import">Importar YAML</button>
+      </div>
+      <p class="meta" id="act-stats"></p>
+      <div id="act-list" class="events-list"></div>
+    </div>
+    <div class="events-detail-pane card">
+      <h2 id="act-detail-title">Editor de cadena</h2>
+      <p class="meta" id="act-detail-meta">Selecciona una cadena o crea una mixta.</p>
+      <div id="act-detail" style="display:none">
+        <div class="row">
+          <div><label>ID</label><input id="act-id"></div>
+          <div>
+            <label>Tipo cadena</label>
+            <select id="act-legitimacy">
+              <option value="legitimate">Legítima</option>
+              <option value="illegitimate">Ilegítima</option>
+              <option value="mixed">Mixta</option>
+            </select>
+          </div>
+        </div>
+        <label>Nombre</label>
+        <input id="act-name">
+        <div class="row">
+          <div><label>Categoría</label><select id="act-category"><option value="">— sin categoría —</option></select></div>
+          <div><label>Severidad</label><input id="act-severity"></div>
+        </div>
+        <label>Objetivo simulado</label>
+        <textarea id="act-objective" rows="2"></textarea>
+        <div class="row" style="margin:10px 0;align-items:center">
+          <h3 style="margin:0;flex:1">Logs de la cadena</h3>
+          <button type="button" class="btn btn-ghost btn-sm" id="btn-act-add-log">+ Log</button>
+        </div>
+        <div id="act-logs-editor" class="chain-logs-editor"></div>
+        <div class="row" style="margin-top:12px">
+          <button type="button" class="btn btn-success" id="btn-act-save">Guardar cadena</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
 <!-- ========== ESCENARIO ========== -->
 <section id="panel-scenario" class="panel">
   <div id="sc-banner"></div>
@@ -147,7 +381,7 @@
     </div>
     <div id="sc-new-hint" class="meta">Plantilla vacía con una fase. Edita y guarda como YAML nuevo.</div>
     <div id="sc-load-panel" style="display:none">
-      <label>Escenarios guardados en <code>scenarios/</code></label>
+      <label>Escenarios (SQLite <code>scenario_steps</code> + YAML)</label>
       <div id="sc-scenario-list" class="scenario-list"></div>
       <div class="row" style="margin-top:10px">
         <div>
@@ -175,7 +409,44 @@
   </div>
   <details class="card" id="event-catalog-panel">
     <summary>Catálogo de eventos (MITRE TTP) — <span id="catalog-count">0</span> plantillas</summary>
-    <p class="meta">Cada evento está asociado a tácticas y técnicas MITRE. En una fase con táctica elegida, solo verás los eventos compatibles.</p>
+    <div class="row" style="margin:8px 0;align-items:flex-end">
+      <div><label>Filtrar sistema</label>
+        <select id="catalog-filter-system">
+          <option value="">Todos</option>
+          <option value="fortigate">FortiGate</option>
+          <option value="windows">Windows</option>
+          <option value="linux">Linux</option>
+          <option value="fortiedr">FortiEDR</option>
+          <option value="vmware">VMware</option>
+          <option value="fortimail">FortiMail</option>
+        </select>
+      </div>
+      <div><label>Categoría</label>
+        <select id="catalog-filter-category">
+          <option value="">Todas</option>
+          <option value="vpn">vpn</option>
+          <option value="traffic">traffic</option>
+        </select>
+      </div>
+      <div style="flex:0"><label>&nbsp;</label>
+        <button type="button" class="btn btn-ghost btn-sm" id="btn-catalog-filter">Filtrar</button>
+      </div>
+    </div>
+    <details class="meta" id="fortigate-format-help" style="margin:8px 0">
+      <summary>FortiGate — placeholders disponibles</summary>
+      <p id="fortigate-placeholders-list">user, remote_access_ip, vpn_gateway_ip, vpn_assigned_ip, devname, devserial, …</p>
+    </details>
+    <p class="meta">Filtra eventos y añádelos a una fase MITRE con el botón <strong>+ Añadir</strong> (doble clic en la fila también funciona).</p>
+    <div class="row" style="margin:8px 0;align-items:flex-end">
+      <div>
+        <label>Añadir eventos a fase</label>
+        <select id="catalog-target-phase"><option value="">— crea una fase MITRE —</option></select>
+      </div>
+      <div style="flex:0">
+        <label>&nbsp;</label>
+        <button type="button" class="btn btn-primary btn-sm" id="btn-catalog-add-all">+ Añadir todos (filtrados)</button>
+      </div>
+    </div>
     <div class="row" style="margin:8px 0; align-items:flex-end">
       <div style="flex:1">
         <label>Importar eventos (YAML)</label>
@@ -190,7 +461,7 @@
     <div id="catalog-banner" class="banner dry" style="display:none"></div>
     <div style="overflow:auto; max-height:280px">
       <table class="list-table catalog-table">
-        <thead><tr><th>ID</th><th>Nombre</th><th>Sistema</th><th>Tácticas</th><th>Técnicas</th></tr></thead>
+        <thead><tr><th>ID</th><th>Nombre</th><th>Formato</th><th>Sistema</th><th>Categoría</th><th>Acción</th><th>Tácticas</th><th>Técnicas</th><th></th></tr></thead>
         <tbody id="event-catalog-body"></tbody>
       </table>
     </div>
@@ -221,6 +492,15 @@
     </div>
   </details>
   <div id="sc-phases"></div>
+  <details class="card" id="sc-chains-panel">
+    <summary>Cadenas Linux disponibles — <span id="sc-chains-count">0</span></summary>
+    <p class="meta">Las <strong>cadenas</strong> son agrupaciones ordenadas de logs Linux (con delays entre pasos). En cada fase MITRE puedes mezclar eventos simples, cadenas y correos.</p>
+    <p id="sc-chains-hint" class="meta" style="display:none;color:#fca5a5">No hay cadenas cargadas. Importa el catálogo YAML para usarlas en escenarios.</p>
+    <div class="row" style="margin-top:8px">
+      <button type="button" class="btn btn-ghost btn-sm" id="btn-sc-import-chains">Importar cadenas YAML</button>
+      <button type="button" class="btn btn-ghost btn-sm" id="btn-sc-goto-chains">Ir a editor Cadenas</button>
+    </div>
+  </details>
   <div class="row" style="margin-top:8px">
     <div>
       <label>Añadir fase MITRE ATT&CK</label>
@@ -234,9 +514,17 @@
       <label>&nbsp;</label>
       <button type="button" class="btn btn-ghost" id="btn-add-phase-email">+ Fase correo</button>
     </div>
+    <div>
+      <label>Cadena Linux</label>
+      <select id="sc-add-chain"><option value="">— elegir cadena —</option></select>
+    </div>
+    <div style="flex:0">
+      <label>&nbsp;</label>
+      <button type="button" class="btn btn-ghost" id="btn-add-phase-chain">+ Fase cadena</button>
+    </div>
   </div>
   <div style="margin-top:16px">
-    <button type="button" class="btn btn-success" id="btn-save-scenario">Guardar escenario YAML</button>
+    <button type="button" class="btn btn-success" id="btn-save-scenario">Guardar escenario (SQLite/YAML)</button>
   </div>
 </section>
 

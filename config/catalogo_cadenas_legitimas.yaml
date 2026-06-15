@@ -1,0 +1,304 @@
+catalogo_cadenas_legitimas:
+  metadata:
+    nombre: "catalogo_cadenas_linux_legitimas"
+    version: "1.0"
+    uso: "Simulación de actividad administrativa normal en Linux"
+    campo_clasificacion: "legitimidad"
+    valor_legitimidad: "legit"
+    nota: >
+      Estas cadenas representan secuencias normales de operación.
+      Pueden ser usadas como baseline, entrenamiento de parsers, pruebas SIEM
+      o generación de actividad sintética.
+
+  cadenas:
+
+    - id: "chain_legit_ssh_revision_servicio"
+      nombre: "Login SSH y revisión de servicio"
+      legitimidad: "legit"
+      categoria: "administracion_remota"
+      severidad_sugerida: "info"
+      objetivo_simulado: "Usuario autorizado accede por SSH y revisa el estado de un servicio."
+      perfil_usuario_esperado:
+        usuario: "admin | operador"
+        origen: "red_corporativa | vpn"
+        horario: "horario_laboral"
+      entidades:
+        host: "{{host}}"
+        user: "{{user}}"
+        src_ip: "{{src_ip}}"
+        service: "{{service}}"
+      eventos_en_orden:
+        - orden: 1
+          event_ref: "auth_ssh_login_success"
+          delta_sugerido: "0s"
+        - orden: 2
+          event_ref: "auth_ssh_session_opened"
+          delta_sugerido: "+1s"
+        - orden: 3
+          event_ref: "auth_sudo_command"
+          command_ref: "cmd_systemctl_status_service"
+          delta_sugerido: "+30s"
+        - orden: 4
+          event_ref: "auth_sudo_session_opened"
+          delta_sugerido: "+1s"
+        - orden: 5
+          event_ref: "auth_sudo_session_closed"
+          delta_sugerido: "+2s"
+        - orden: 6
+          event_ref: "auth_ssh_session_closed"
+          delta_sugerido: "+10m"
+      mitre_contextual:
+        - "T1021.004"
+        - "T1078"
+        - "T1548.003"
+      resultado_esperado:
+        - "Sesión SSH válida"
+        - "Consulta administrativa sin cambios persistentes"
+        - "Cierre normal de sesión"
+      condiciones_para_considerar_normal:
+        - "IP de origen habitual"
+        - "Usuario autorizado"
+        - "Comando permitido por política"
+        - "No hay cambios de configuración posteriores"
+
+    - id: "chain_legit_mantenimiento_nginx"
+      nombre: "Mantenimiento normal de servicio web"
+      legitimidad: "legit"
+      categoria: "mantenimiento_web"
+      severidad_sugerida: "info"
+      objetivo_simulado: "Administrador actualiza o reinicia un servicio web y valida acceso HTTP."
+      perfil_usuario_esperado:
+        usuario: "admin | devops"
+        origen: "red_corporativa | vpn"
+        horario: "ventana_mantenimiento"
+      entidades:
+        service: "nginx"
+        package: "nginx"
+        uri: "/"
+      eventos_en_orden:
+        - orden: 1
+          event_ref: "auth_ssh_login_success"
+          delta_sugerido: "0s"
+        - orden: 2
+          event_ref: "auth_ssh_session_opened"
+          delta_sugerido: "+1s"
+        - orden: 3
+          event_ref: "auth_sudo_command"
+          command_ref: "cmd_apt_update"
+          delta_sugerido: "+1m"
+        - orden: 4
+          event_ref: "package_apt_update"
+          delta_sugerido: "+5s"
+        - orden: 5
+          event_ref: "auth_sudo_command"
+          command_ref: "cmd_apt_install_known_package"
+          delta_sugerido: "+2m"
+        - orden: 6
+          event_ref: "package_apt_install"
+          delta_sugerido: "+5s"
+        - orden: 7
+          event_ref: "package_dpkg_install"
+          delta_sugerido: "+10s"
+        - orden: 8
+          event_ref: "auth_sudo_command"
+          command_ref: "cmd_systemctl_restart_service"
+          delta_sugerido: "+1m"
+        - orden: 9
+          event_ref: "systemd_service_started"
+          delta_sugerido: "+2s"
+        - orden: 10
+          event_ref: "nginx_error_notice"
+          delta_sugerido: "+1s"
+        - orden: 11
+          event_ref: "nginx_access_get"
+          delta_sugerido: "+30s"
+        - orden: 12
+          event_ref: "nginx_access_static_asset"
+          delta_sugerido: "+1s"
+        - orden: 13
+          event_ref: "auth_ssh_session_closed"
+          delta_sugerido: "+5m"
+      mitre_contextual:
+        - "T1021.004"
+        - "T1078"
+        - "T1548.003"
+        - "T1105"
+      resultado_esperado:
+        - "Paquete aprobado instalado o actualizado"
+        - "Servicio web operativo"
+        - "Tráfico HTTP normal"
+      condiciones_para_considerar_normal:
+        - "Existe ticket o ventana de cambio"
+        - "Repositorio aprobado"
+        - "Paquete esperado"
+        - "Usuario pertenece a equipo autorizado"
+
+    - id: "chain_legit_backup_programado"
+      nombre: "Backup programado por cron"
+      legitimidad: "legit"
+      categoria: "backup"
+      severidad_sugerida: "info"
+      objetivo_simulado: "Ejecución periódica de backup mediante cron."
+      perfil_usuario_esperado:
+        usuario: "root | backup"
+        origen: "local"
+        horario: "programado"
+      entidades:
+        script: "/usr/local/bin/backup.sh"
+        backup_path: "/backup"
+      eventos_en_orden:
+        - orden: 1
+          event_ref: "cron_session_opened"
+          delta_sugerido: "0s"
+        - orden: 2
+          event_ref: "cron_job_started"
+          command_ref: "cmd_backup_tar_normal"
+          delta_sugerido: "+1s"
+        - orden: 3
+          command_ref: "cmd_rsync_backup_normal"
+          delta_sugerido: "+30s"
+        - orden: 4
+          event_ref: "cron_session_closed"
+          delta_sugerido: "+2m"
+      mitre_contextual:
+        - "T1053.003"
+      resultado_esperado:
+        - "Backup local o remoto hacia destino autorizado"
+        - "Sin transferencia a destinos desconocidos"
+      condiciones_para_considerar_normal:
+        - "Script conocido"
+        - "Hash del script esperado"
+        - "Destino de backup aprobado"
+        - "Frecuencia consistente con baseline"
+
+    - id: "chain_legit_revision_logs"
+      nombre: "Revisión operativa de logs"
+      legitimidad: "legit"
+      categoria: "observabilidad"
+      severidad_sugerida: "info"
+      objetivo_simulado: "Operador consulta logs para diagnosticar un servicio."
+      perfil_usuario_esperado:
+        usuario: "admin | operador | sre"
+        origen: "red_corporativa | vpn"
+        horario: "horario_laboral"
+      entidades:
+        service: "{{service}}"
+        log_file: "/var/log/{{service}}/access.log"
+      eventos_en_orden:
+        - orden: 1
+          event_ref: "auth_ssh_login_success"
+          delta_sugerido: "0s"
+        - orden: 2
+          event_ref: "auth_ssh_session_opened"
+          delta_sugerido: "+1s"
+        - orden: 3
+          command_ref: "cmd_journalctl_service"
+          delta_sugerido: "+20s"
+        - orden: 4
+          command_ref: "cmd_tail_log_file"
+          delta_sugerido: "+15s"
+        - orden: 5
+          command_ref: "cmd_systemctl_status_service"
+          delta_sugerido: "+1m"
+        - orden: 6
+          event_ref: "auth_ssh_session_closed"
+          delta_sugerido: "+15m"
+      mitre_contextual:
+        - "T1021.004"
+        - "T1078"
+      resultado_esperado:
+        - "Solo lectura de logs"
+        - "Sin truncado, borrado o modificación"
+      condiciones_para_considerar_normal:
+        - "Acceso a logs permitido"
+        - "No hay comandos de limpieza"
+        - "No hay cambios de permisos en /var/log"
+
+    - id: "chain_legit_revision_red"
+      nombre: "Diagnóstico normal de red"
+      legitimidad: "legit"
+      categoria: "red"
+      severidad_sugerida: "info"
+      objetivo_simulado: "Administrador revisa interfaces, IPs y puertos en escucha."
+      perfil_usuario_esperado:
+        usuario: "admin | operador"
+        origen: "red_corporativa | vpn"
+        horario: "horario_laboral"
+      eventos_en_orden:
+        - orden: 1
+          event_ref: "auth_ssh_login_success"
+          delta_sugerido: "0s"
+        - orden: 2
+          event_ref: "auth_ssh_session_opened"
+          delta_sugerido: "+1s"
+        - orden: 3
+          command_ref: "cmd_ip_addr_show"
+          delta_sugerido: "+20s"
+        - orden: 4
+          command_ref: "cmd_ss_listening_ports"
+          delta_sugerido: "+20s"
+        - orden: 5
+          command_ref: "cmd_ps_process_review"
+          delta_sugerido: "+30s"
+        - orden: 6
+          event_ref: "auth_ssh_session_closed"
+          delta_sugerido: "+10m"
+      mitre_contextual:
+        - "T1021.004"
+        - "T1078"
+      resultado_esperado:
+        - "Actividad de diagnóstico"
+        - "Sin cambios de firewall"
+        - "Sin conexiones salientes anómalas"
+      condiciones_para_considerar_normal:
+        - "Usuario autorizado"
+        - "Host bajo investigación operativa"
+        - "No hay ejecución desde rutas temporales"
+
+    - id: "chain_legit_docker_operacion"
+      nombre: "Operación normal de contenedor"
+      legitimidad: "legit"
+      categoria: "contenedores"
+      severidad_sugerida: "info"
+      objetivo_simulado: "DevOps revisa contenedores y logs de una aplicación."
+      perfil_usuario_esperado:
+        usuario: "devops | admin"
+        origen: "red_corporativa | vpn"
+        horario: "horario_laboral | ventana_mantenimiento"
+      entidades:
+        container: "{{container_name}}"
+        image: "{{approved_image}}"
+      eventos_en_orden:
+        - orden: 1
+          event_ref: "auth_ssh_login_success"
+          delta_sugerido: "0s"
+        - orden: 2
+          event_ref: "auth_ssh_session_opened"
+          delta_sugerido: "+1s"
+        - orden: 3
+          command_ref: "cmd_docker_ps"
+          delta_sugerido: "+20s"
+        - orden: 4
+          command_ref: "cmd_docker_logs"
+          delta_sugerido: "+30s"
+        - orden: 5
+          event_ref: "docker_container_start"
+          delta_sugerido: "+2m"
+        - orden: 6
+          event_ref: "nginx_access_get"
+          delta_sugerido: "+30s"
+        - orden: 7
+          event_ref: "auth_ssh_session_closed"
+          delta_sugerido: "+10m"
+      mitre_contextual:
+        - "T1609"
+        - "T1610"
+      resultado_esperado:
+        - "Contenedor aprobado iniciado o revisado"
+        - "Sin modo privilegiado"
+        - "Sin montajes sensibles del host"
+      condiciones_para_considerar_normal:
+        - "Imagen aprobada"
+        - "Usuario pertenece al equipo DevOps"
+        - "No se usa --privileged"
+        - "No se monta / ni docker.sock"

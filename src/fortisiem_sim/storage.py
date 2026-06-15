@@ -39,7 +39,7 @@ def use_sql_storage() -> bool:
     return db_path().exists()
 
 
-def enable_sql_storage(seed_from_yaml: bool = True, path: Path | None = None) -> Path:
+def enable_sql_storage(seed_from_yaml: bool = False, path: Path | None = None) -> Path:
     return ensure_database(seed_from_yaml=seed_from_yaml, path=path)
 
 

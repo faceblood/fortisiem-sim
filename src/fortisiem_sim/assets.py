@@ -56,6 +56,16 @@ def _empty_assets() -> dict[str, Any]:
     }
 
 
+
+def _norm_user(raw: Any) -> dict[str, str]:
+    if isinstance(raw, dict):
+        username = str(raw.get("username") or raw.get("samaccountname") or "").strip()
+        email = str(raw.get("email") or f"{username}@age.local").strip()
+        return {"username": username, "email": email}
+    name = str(raw).strip()
+    return {"username": name, "email": f"{name}@age.local"}
+
+
 def _normalize_assets(data: dict[str, Any]) -> dict[str, Any]:
     ad = data.get("ad") or {}
     pools = data.get("pools") or {}
@@ -65,7 +75,7 @@ def _normalize_assets(data: dict[str, Any]) -> dict[str, Any]:
         "ad": {
             "primary_domain": str(ad.get("primary_domain", "lab.local")),
             "domains": [str(x) for x in ad.get("domains", ["lab.local"])],
-            "users": [str(x) for x in ad.get("users", [])],
+            "users": [_norm_user(x) for x in ad.get("users", [])],
         },
         "firewalls": [_norm_fw(x) for x in data.get("firewalls", []) if isinstance(x, dict)],
         "windows_hosts": [_norm_host(x) for x in data.get("windows_hosts", []) if isinstance(x, dict)],
@@ -80,6 +90,10 @@ def _normalize_assets(data: dict[str, Any]) -> dict[str, Any]:
         },
         "c2": c2,
         "smtp": smtp,
+        "stats": data.get("stats") or {},
+        "storage": data.get("storage") or "",
+        "vmware_users": data.get("vmware_users") or [],
+        "vmware_assets": data.get("vmware_assets") or [],
     }
 
 
@@ -103,16 +117,28 @@ def _norm_host(raw: dict[str, Any]) -> dict[str, str]:
     }
 
 
+def _username_from_user_entry(entry: Any) -> str:
+    if isinstance(entry, dict):
+        return str(entry.get("username") or entry.get("samaccountname") or "").strip()
+    return str(entry).strip()
+
+
+def _usernames_from_ad(ad: dict[str, Any]) -> list[str]:
+    return [_username_from_user_entry(u) for u in ad.get("users", []) if _username_from_user_entry(u)]
+
+
 def assets_to_actors(assets: dict[str, Any]) -> dict[str, Any]:
     """Genera bloque actors YAML a partir del inventario Config."""
     ad = assets.get("ad", {})
     domain = ad.get("primary_domain", "lab.local")
     profiles: dict[str, Any] = {}
+    user_names = _usernames_from_ad(ad)
+    default_user = user_names[0] if user_names else "vpn.user"
 
     for i, fw in enumerate(assets.get("firewalls", [])):
         key = f"firewall_{i + 1}" if i else "firewall"
         profiles[key] = {
-            "user": ad.get("users", ["lab.user"])[0] if ad.get("users") else "vpn.user",
+            "user": default_user,
             "domain": domain,
             "src_ip": fw["src_ip"],
             "reporting_ip": fw["reporting_ip"],
@@ -120,6 +146,7 @@ def assets_to_actors(assets: dict[str, Any]) -> dict[str, Any]:
             "extra": {
                 "devname": fw["devname"],
                 "serial": fw.get("serial", "FGT00000000"),
+                "vpn_gateway_ip": fw["src_ip"],
             },
         }
 
@@ -153,7 +180,7 @@ def assets_to_actors(assets: dict[str, Any]) -> dict[str, Any]:
         }
 
     pools = assets.get("pools", {})
-    all_users = ad.get("users", [])
+    all_users = user_names or ["lab.user"]
     all_hostnames = [h["hostname"] for h in assets.get("windows_hosts", [])]
     all_hostnames += [h["hostname"] for h in assets.get("linux_hosts", [])]
     all_src = pools.get("src_ips") or [p["src_ip"] for p in profiles.values()]

@@ -1,0 +1,1462 @@
+catalogo_eventos_linux:
+  metadata:
+    nombre: "catalogo_eventos_linux"
+    version: "1.0"
+    uso: "Catálogo de eventos Linux para generación de logs sintéticos, normalización SIEM y correlación"
+    campo_clasificacion: "legitimidad"
+    valores_legitimidad:
+      - "legit"
+      - "non-legit"
+    nota_seguridad: >
+      Este catálogo describe eventos de sistema Linux en formato sintético.
+      Los eventos marcados como non-legit representan señales defensivas o actividad sospechosa,
+      no instrucciones operativas.
+
+  variables_comunes:
+    timestamp: "Jun 14 10:15:22"
+    timestamp_iso: "2026-06-14 10:15:22"
+    timestamp_nginx: "14/Jun/2026:10:15:22 +0200"
+    timestamp_nginx_error: "2026/06/14 10:15:22"
+    host: "srv-linux-01"
+    user: "alice"
+    admin_user: "admin"
+    src_ip: "192.168.1.50"
+    src_port: 52244
+    dst_ip: "192.168.1.20"
+    dst_port: 22
+    tty: "pts/0"
+    uid: 1001
+    session_id: 42
+    pid: 12345
+
+  eventos:
+
+    - id: "auth_ssh_login_success"
+      nombre: "SSH login correcto"
+      categoria: "autenticacion"
+      legitimidad: "legit"
+      severidad_sugerida: "info"
+      fuente: "auth.log"
+      ruta_linux:
+        debian_ubuntu: "/var/log/auth.log"
+        rhel_centos_fedora: "/var/log/secure"
+      programa: "sshd"
+      plantilla: "{{timestamp}} {{host}} sshd[{{pid}}]: Accepted publickey for {{user}} from {{src_ip}} port {{src_port}} ssh2"
+      ejemplo: "Jun 14 10:15:22 srv-linux-01 sshd[12345]: Accepted publickey for alice from 192.168.1.50 port 52244 ssh2"
+      campos:
+        user: "{{user}}"
+        src_ip: "{{src_ip}}"
+        src_port: "{{src_port}}"
+        auth_method: "publickey"
+      mitre:
+        relevancia: "alta_contextual"
+        tecnicas:
+          - "T1021.004"
+          - "T1078"
+          - "T1078.003"
+        razon: "Acceso remoto SSH usando una cuenta válida."
+
+    - id: "auth_ssh_login_password_success"
+      nombre: "SSH login correcto por contraseña"
+      categoria: "autenticacion"
+      legitimidad: "legit"
+      severidad_sugerida: "info"
+      fuente: "auth.log"
+      ruta_linux:
+        debian_ubuntu: "/var/log/auth.log"
+        rhel_centos_fedora: "/var/log/secure"
+      programa: "sshd"
+      plantilla: "{{timestamp}} {{host}} sshd[{{pid}}]: Accepted password for {{user}} from {{src_ip}} port {{src_port}} ssh2"
+      ejemplo: "Jun 14 10:16:11 srv-linux-01 sshd[12346]: Accepted password for alice from 192.168.1.50 port 52245 ssh2"
+      campos:
+        user: "{{user}}"
+        src_ip: "{{src_ip}}"
+        src_port: "{{src_port}}"
+        auth_method: "password"
+      mitre:
+        relevancia: "contextual"
+        tecnicas:
+          - "T1021.004"
+          - "T1078"
+        razon: "Login SSH válido; puede ser normal o sospechoso según origen y baseline."
+
+    - id: "auth_ssh_login_failed"
+      nombre: "SSH login fallido"
+      categoria: "autenticacion"
+      legitimidad: "non-legit"
+      severidad_sugerida: "medium"
+      fuente: "auth.log"
+      ruta_linux:
+        debian_ubuntu: "/var/log/auth.log"
+        rhel_centos_fedora: "/var/log/secure"
+      programa: "sshd"
+      plantilla: "{{timestamp}} {{host}} sshd[{{pid}}]: Failed password for {{user}} from {{src_ip}} port {{src_port}} ssh2"
+      ejemplo: "Jun 14 10:17:02 srv-linux-01 sshd[12347]: Failed password for invaliduser from 203.0.113.10 port 51111 ssh2"
+      campos:
+        user: "{{user}}"
+        src_ip: "{{src_ip}}"
+        src_port: "{{src_port}}"
+        auth_method: "password"
+        result: "failure"
+      mitre:
+        relevancia: "alta_contextual"
+        tecnicas:
+          - "T1110"
+          - "T1021.004"
+        razon: "Intento fallido de autenticación SSH; múltiples eventos pueden indicar fuerza bruta."
+
+    - id: "auth_ssh_invalid_user"
+      nombre: "SSH usuario inválido"
+      categoria: "autenticacion"
+      legitimidad: "non-legit"
+      severidad_sugerida: "medium"
+      fuente: "auth.log"
+      programa: "sshd"
+      plantilla: "{{timestamp}} {{host}} sshd[{{pid}}]: Invalid user {{user}} from {{src_ip}} port {{src_port}}"
+      ejemplo: "Jun 14 10:17:10 srv-linux-01 sshd[12348]: Invalid user test from 203.0.113.10 port 51112"
+      campos:
+        user: "{{user}}"
+        src_ip: "{{src_ip}}"
+        src_port: "{{src_port}}"
+      mitre:
+        relevancia: "alta_contextual"
+        tecnicas:
+          - "T1110"
+          - "T1087"
+        razon: "Enumeración o intento de autenticación con usuario inexistente."
+
+    - id: "auth_ssh_session_opened"
+      nombre: "Apertura de sesión SSH"
+      categoria: "autenticacion"
+      legitimidad: "legit"
+      severidad_sugerida: "info"
+      fuente: "auth.log"
+      programa: "sshd"
+      plantilla: "{{timestamp}} {{host}} sshd[{{pid}}]: pam_unix(sshd:session): session opened for user {{user}} by (uid=0)"
+      ejemplo: "Jun 14 10:15:22 srv-linux-01 sshd[12345]: pam_unix(sshd:session): session opened for user alice by (uid=0)"
+      campos:
+        user: "{{user}}"
+        pam_service: "sshd"
+        session_state: "opened"
+      mitre:
+        relevancia: "contextual"
+        tecnicas:
+          - "T1021.004"
+          - "T1078"
+        razon: "Apertura de sesión tras autenticación remota."
+
+    - id: "auth_ssh_session_closed"
+      nombre: "Cierre de sesión SSH"
+      categoria: "autenticacion"
+      legitimidad: "legit"
+      severidad_sugerida: "info"
+      fuente: "auth.log"
+      programa: "sshd"
+      plantilla: "{{timestamp}} {{host}} sshd[{{pid}}]: pam_unix(sshd:session): session closed for user {{user}}"
+      ejemplo: "Jun 14 10:42:08 srv-linux-01 sshd[12345]: pam_unix(sshd:session): session closed for user alice"
+      campos:
+        user: "{{user}}"
+        pam_service: "sshd"
+        session_state: "closed"
+      mitre:
+        relevancia: "baja_contextual"
+        tecnicas:
+          - "T1021.004"
+        razon: "Cierre de sesión; útil para reconstrucción temporal."
+
+    - id: "auth_sudo_command"
+      nombre: "Comando ejecutado con sudo"
+      categoria: "privilegios"
+      legitimidad: "legit"
+      severidad_sugerida: "info"
+      fuente: "auth.log"
+      programa: "sudo"
+      plantilla: "{{timestamp}} {{host}} sudo: {{user}} : TTY={{tty}} ; PWD={{pwd}} ; USER=root ; COMMAND={{command}}"
+      ejemplo: "Jun 14 10:18:03 srv-linux-01 sudo: alice : TTY=pts/0 ; PWD=/home/alice ; USER=root ; COMMAND=/usr/bin/systemctl status nginx"
+      campos:
+        user: "{{user}}"
+        tty: "{{tty}}"
+        pwd: "/home/{{user}}"
+        run_as: "root"
+        command: "{{command}}"
+      mitre:
+        relevancia: "alta_contextual"
+        tecnicas:
+          - "T1548.003"
+          - "T1059.004"
+        razon: "Elevación de privilegios mediante sudo para ejecutar comandos."
+
+    - id: "auth_sudo_session_opened"
+      nombre: "Apertura de sesión sudo"
+      categoria: "privilegios"
+      legitimidad: "legit"
+      severidad_sugerida: "info"
+      fuente: "auth.log"
+      programa: "sudo"
+      plantilla: "{{timestamp}} {{host}} sudo: pam_unix(sudo:session): session opened for user root by {{user}}(uid={{uid}})"
+      ejemplo: "Jun 14 10:18:03 srv-linux-01 sudo: pam_unix(sudo:session): session opened for user root by alice(uid=1001)"
+      campos:
+        user: "{{user}}"
+        target_user: "root"
+        uid: "{{uid}}"
+        session_state: "opened"
+      mitre:
+        relevancia: "contextual"
+        tecnicas:
+          - "T1548.003"
+        razon: "Apertura de contexto privilegiado con sudo."
+
+    - id: "auth_sudo_session_closed"
+      nombre: "Cierre de sesión sudo"
+      categoria: "privilegios"
+      legitimidad: "legit"
+      severidad_sugerida: "info"
+      fuente: "auth.log"
+      programa: "sudo"
+      plantilla: "{{timestamp}} {{host}} sudo: pam_unix(sudo:session): session closed for user root"
+      ejemplo: "Jun 14 10:18:04 srv-linux-01 sudo: pam_unix(sudo:session): session closed for user root"
+      campos:
+        target_user: "root"
+        session_state: "closed"
+      mitre:
+        relevancia: "baja_contextual"
+        tecnicas:
+          - "T1548.003"
+        razon: "Cierre de contexto sudo."
+
+    - id: "auth_sudo_auth_failure"
+      nombre: "Fallo de autenticación sudo"
+      categoria: "privilegios"
+      legitimidad: "non-legit"
+      severidad_sugerida: "medium"
+      fuente: "auth.log"
+      programa: "sudo"
+      plantilla: "{{timestamp}} {{host}} sudo: pam_unix(sudo:auth): authentication failure; logname={{user}} uid={{uid}} euid=0 tty={{tty}} ruser={{user}} rhost= user={{user}}"
+      ejemplo: "Jun 14 10:20:10 srv-linux-01 sudo: pam_unix(sudo:auth): authentication failure; logname=alice uid=1001 euid=0 tty=pts/0 ruser=alice rhost= user=alice"
+      campos:
+        user: "{{user}}"
+        uid: "{{uid}}"
+        tty: "{{tty}}"
+        result: "failure"
+      mitre:
+        relevancia: "alta_contextual"
+        tecnicas:
+          - "T1548.003"
+        razon: "Intento fallido de elevación mediante sudo."
+
+    - id: "auth_user_login_console"
+      nombre: "Login local por consola"
+      categoria: "autenticacion"
+      legitimidad: "legit"
+      severidad_sugerida: "info"
+      fuente: "auth.log"
+      programa: "login"
+      plantilla: "{{timestamp}} {{host}} login[{{pid}}]: pam_unix(login:session): session opened for user {{user}} by LOGIN(uid=0)"
+      ejemplo: "Jun 14 09:02:11 srv-linux-01 login[2188]: pam_unix(login:session): session opened for user alice by LOGIN(uid=0)"
+      campos:
+        user: "{{user}}"
+        pam_service: "login"
+        session_state: "opened"
+      mitre:
+        relevancia: "contextual"
+        tecnicas:
+          - "T1078"
+          - "T1078.003"
+        razon: "Uso de cuenta válida en consola local."
+
+    - id: "auth_polkit_action"
+      nombre: "Autorización polkit"
+      categoria: "privilegios"
+      legitimidad: "legit"
+      severidad_sugerida: "info"
+      fuente: "auth.log"
+      programa: "polkitd"
+      plantilla: "{{timestamp}} {{host}} polkitd[{{pid}}]: Operator of unix-session:{{session_id}} successfully authenticated as unix-user:{{user}} to gain TEMPORARY authorization for action {{action}}"
+      ejemplo: "Jun 14 10:20:44 srv-linux-01 polkitd[987]: Operator of unix-session:42 successfully authenticated as unix-user:alice to gain TEMPORARY authorization for action org.freedesktop.systemd1.manage-units"
+      campos:
+        user: "{{user}}"
+        session_id: "{{session_id}}"
+        action: "org.freedesktop.systemd1.manage-units"
+      mitre:
+        relevancia: "media_contextual"
+        tecnicas:
+          - "T1548"
+        razon: "Autorización temporal para acción privilegiada."
+
+    - id: "systemd_service_started"
+      nombre: "Servicio iniciado"
+      categoria: "servicios"
+      legitimidad: "legit"
+      severidad_sugerida: "info"
+      fuente: "syslog"
+      ruta_linux:
+        debian_ubuntu: "/var/log/syslog"
+        systemd_journal: "journalctl"
+      programa: "systemd"
+      plantilla: "{{timestamp}} {{host}} systemd[1]: Started {{service_description}}."
+      ejemplo: "Jun 14 10:21:15 srv-linux-01 systemd[1]: Started A high performance web server and a reverse proxy server."
+      campos:
+        unit: "{{unit}}"
+        service_description: "{{service_description}}"
+      mitre:
+        relevancia: "condicional"
+        tecnicas:
+          - "T1543.002"
+        razon: "Inicio de servicio; relevante si el unit file es nuevo o modificado."
+
+    - id: "systemd_service_stopped"
+      nombre: "Servicio detenido"
+      categoria: "servicios"
+      legitimidad: "legit"
+      severidad_sugerida: "info"
+      fuente: "syslog"
+      programa: "systemd"
+      plantilla: "{{timestamp}} {{host}} systemd[1]: Stopped {{service_description}}."
+      ejemplo: "Jun 14 10:35:09 srv-linux-01 systemd[1]: Stopped A high performance web server and a reverse proxy server."
+      campos:
+        unit: "{{unit}}"
+        service_description: "{{service_description}}"
+      mitre:
+        relevancia: "condicional"
+        tecnicas:
+          - "T1543.002"
+        razon: "Parada de servicio; puede ser sospechosa si afecta servicios de seguridad."
+
+    - id: "systemd_service_reloaded"
+      nombre: "Servicio recargado"
+      categoria: "servicios"
+      legitimidad: "legit"
+      severidad_sugerida: "info"
+      fuente: "syslog"
+      programa: "systemd"
+      plantilla: "{{timestamp}} {{host}} systemd[1]: Reloaded {{service_description}}."
+      ejemplo: "Jun 14 10:24:31 srv-linux-01 systemd[1]: Reloaded A high performance web server and a reverse proxy server."
+      campos:
+        unit: "{{unit}}"
+        service_description: "{{service_description}}"
+      mitre:
+        relevancia: "condicional"
+        tecnicas:
+          - "T1543.002"
+        razon: "Recarga de servicio tras cambios de configuración."
+
+    - id: "systemd_security_service_stopped"
+      nombre: "Servicio de seguridad detenido"
+      categoria: "desactivacion_defensas"
+      legitimidad: "non-legit"
+      severidad_sugerida: "critical"
+      fuente: "syslog"
+      programa: "systemd"
+      plantilla: "{{timestamp}} {{host}} systemd[1]: Stopped {{security_service_description}}."
+      ejemplo: "Jun 14 11:01:10 srv-linux-01 systemd[1]: Stopped Security Auditing Service."
+      campos:
+        unit: "auditd.service"
+        service_family: "security_logging"
+      mitre:
+        relevancia: "alta"
+        tecnicas:
+          - "T1562"
+          - "T1562.012"
+        razon: "Parada de servicio de auditoría, logging o seguridad."
+
+    - id: "system_boot"
+      nombre: "Arranque del sistema"
+      categoria: "sistema"
+      legitimidad: "legit"
+      severidad_sugerida: "info"
+      fuente: "journal"
+      programa: "kernel"
+      plantilla: "{{timestamp}} {{host}} kernel: Linux version {{kernel_version}}"
+      ejemplo: "Jun 14 08:00:01 srv-linux-01 kernel: Linux version 6.8.0-35-generic"
+      campos:
+        kernel_version: "{{kernel_version}}"
+      mitre:
+        relevancia: "contexto_operacional"
+        tecnicas: []
+        razon: "Evento operativo de arranque."
+
+    - id: "system_shutdown"
+      nombre: "Apagado del sistema"
+      categoria: "sistema"
+      legitimidad: "legit"
+      severidad_sugerida: "info"
+      fuente: "syslog"
+      programa: "systemd"
+      plantilla: "{{timestamp}} {{host}} systemd[1]: Reached target System Shutdown."
+      ejemplo: "Jun 14 22:15:00 srv-linux-01 systemd[1]: Reached target System Shutdown."
+      campos:
+        target: "System Shutdown"
+      mitre:
+        relevancia: "contexto_operacional"
+        tecnicas: []
+        razon: "Evento operativo de apagado."
+
+    - id: "cron_job_started"
+      nombre: "Tarea cron ejecutada"
+      categoria: "tareas_programadas"
+      legitimidad: "legit"
+      severidad_sugerida: "info"
+      fuente: "syslog"
+      programa: "CRON"
+      plantilla: "{{timestamp}} {{host}} CRON[{{pid}}]: ({{user}}) CMD ({{command}})"
+      ejemplo: "Jun 14 11:00:01 srv-linux-01 CRON[22341]: (root) CMD (/usr/local/bin/backup.sh)"
+      campos:
+        user: "{{user}}"
+        command: "{{command}}"
+      mitre:
+        relevancia: "alta_contextual"
+        tecnicas:
+          - "T1053.003"
+          - "T1059.004"
+        razon: "Ejecución de tarea programada."
+
+    - id: "cron_session_opened"
+      nombre: "Apertura de sesión cron"
+      categoria: "tareas_programadas"
+      legitimidad: "legit"
+      severidad_sugerida: "info"
+      fuente: "auth.log"
+      programa: "CRON"
+      plantilla: "{{timestamp}} {{host}} CRON[{{pid}}]: pam_unix(cron:session): session opened for user {{user}} by (uid=0)"
+      ejemplo: "Jun 14 11:00:01 srv-linux-01 CRON[22341]: pam_unix(cron:session): session opened for user root by (uid=0)"
+      campos:
+        user: "{{user}}"
+        pam_service: "cron"
+        session_state: "opened"
+      mitre:
+        relevancia: "contextual"
+        tecnicas:
+          - "T1053.003"
+        razon: "Apertura de sesión asociada a cron."
+
+    - id: "cron_session_closed"
+      nombre: "Cierre de sesión cron"
+      categoria: "tareas_programadas"
+      legitimidad: "legit"
+      severidad_sugerida: "info"
+      fuente: "auth.log"
+      programa: "CRON"
+      plantilla: "{{timestamp}} {{host}} CRON[{{pid}}]: pam_unix(cron:session): session closed for user {{user}}"
+      ejemplo: "Jun 14 11:00:05 srv-linux-01 CRON[22341]: pam_unix(cron:session): session closed for user root"
+      campos:
+        user: "{{user}}"
+        pam_service: "cron"
+        session_state: "closed"
+      mitre:
+        relevancia: "baja_contextual"
+        tecnicas:
+          - "T1053.003"
+        razon: "Cierre de sesión asociada a cron."
+
+    - id: "cron_suspicious_tmp_execution"
+      nombre: "Cron ejecutando desde ruta temporal"
+      categoria: "persistencia"
+      legitimidad: "non-legit"
+      severidad_sugerida: "critical"
+      fuente: "syslog"
+      programa: "CRON"
+      plantilla: "{{timestamp}} {{host}} CRON[{{pid}}]: ({{user}}) CMD (/tmp/{{file}})"
+      ejemplo: "Jun 14 11:10:01 srv-linux-01 CRON[22410]: (root) CMD (/tmp/task)"
+      campos:
+        user: "{{user}}"
+        command_path: "/tmp/{{file}}"
+      mitre:
+        relevancia: "alta"
+        tecnicas:
+          - "T1053.003"
+          - "T1059.004"
+        razon: "Cron ejecutando binario o script desde ruta temporal."
+
+    - id: "package_apt_update"
+      nombre: "APT update"
+      categoria: "paquetes"
+      legitimidad: "legit"
+      severidad_sugerida: "info"
+      fuente: "apt"
+      ruta_linux:
+        debian_ubuntu: "/var/log/apt/history.log"
+      programa: "apt"
+      plantilla: "Commandline: apt {{apt_action}}"
+      ejemplo: "Commandline: apt update"
+      campos:
+        apt_action: "update"
+      mitre:
+        relevancia: "condicional"
+        tecnicas:
+          - "T1105"
+        razon: "Descarga de índices; relevante si se usan repositorios no aprobados."
+
+    - id: "package_apt_install"
+      nombre: "APT install"
+      categoria: "paquetes"
+      legitimidad: "legit"
+      severidad_sugerida: "info"
+      fuente: "apt"
+      ruta_linux:
+        debian_ubuntu: "/var/log/apt/history.log"
+      programa: "apt"
+      plantilla: "Install: {{package}}:{{arch}} ({{version}})"
+      ejemplo: "Install: nginx:amd64 (1.24.0-2ubuntu7)"
+      campos:
+        package: "{{package}}"
+        arch: "{{arch}}"
+        version: "{{version}}"
+      mitre:
+        relevancia: "condicional"
+        tecnicas:
+          - "T1105"
+        razon: "Instalación de paquete; puede ser sospechoso si el paquete no está aprobado."
+
+    - id: "package_suspicious_tool_install"
+      nombre: "Instalación de herramienta potencialmente sospechosa"
+      categoria: "paquetes"
+      legitimidad: "non-legit"
+      severidad_sugerida: "high"
+      fuente: "apt"
+      programa: "apt"
+      plantilla: "Commandline: apt install {{suspicious_package}}"
+      ejemplo: "Commandline: apt install ncat"
+      campos:
+        package: "{{suspicious_package}}"
+      mitre:
+        relevancia: "alta_contextual"
+        tecnicas:
+          - "T1105"
+          - "T1059.004"
+        razon: "Instalación de herramienta que puede habilitar transferencia, túneles o ejecución remota."
+
+    - id: "package_dpkg_install"
+      nombre: "DPKG install"
+      categoria: "paquetes"
+      legitimidad: "legit"
+      severidad_sugerida: "info"
+      fuente: "dpkg"
+      ruta_linux:
+        debian_ubuntu: "/var/log/dpkg.log"
+      programa: "dpkg"
+      plantilla: "{{timestamp_iso}} install {{package}}:{{arch}} {{old_version}} {{new_version}}"
+      ejemplo: "2026-06-14 10:28:02 install nginx:amd64 <none> 1.24.0-2ubuntu7"
+      campos:
+        package: "{{package}}"
+        arch: "{{arch}}"
+        old_version: "{{old_version}}"
+        new_version: "{{new_version}}"
+      mitre:
+        relevancia: "condicional"
+        tecnicas:
+          - "T1105"
+        razon: "Instalación local de paquete."
+
+    - id: "package_yum_install"
+      nombre: "YUM install"
+      categoria: "paquetes"
+      legitimidad: "legit"
+      severidad_sugerida: "info"
+      fuente: "yum"
+      ruta_linux:
+        rhel_centos: "/var/log/yum.log"
+      programa: "yum"
+      plantilla: "{{timestamp}} Installed: {{package}}"
+      ejemplo: "Jun 14 10:29:33 Installed: nginx.x86_64 1:1.24.0-1.el9"
+      campos:
+        package: "{{package}}"
+      mitre:
+        relevancia: "condicional"
+        tecnicas:
+          - "T1105"
+        razon: "Instalación de paquete con yum."
+
+    - id: "package_dnf_install"
+      nombre: "DNF install"
+      categoria: "paquetes"
+      legitimidad: "legit"
+      severidad_sugerida: "info"
+      fuente: "dnf"
+      ruta_linux:
+        fedora_rhel: "/var/log/dnf.log"
+      programa: "dnf"
+      plantilla: "{{timestamp}} INFO Installed: {{package}}"
+      ejemplo: "Jun 14 10:29:33 INFO Installed: nginx-1:1.24.0-1.el9.x86_64"
+      campos:
+        package: "{{package}}"
+      mitre:
+        relevancia: "condicional"
+        tecnicas:
+          - "T1105"
+        razon: "Instalación de paquete con dnf."
+
+    - id: "network_interface_up"
+      nombre: "Interfaz de red activada"
+      categoria: "red"
+      legitimidad: "legit"
+      severidad_sugerida: "info"
+      fuente: "syslog"
+      programa: "NetworkManager"
+      plantilla: "{{timestamp}} {{host}} NetworkManager[{{pid}}]: <info>  [{{epoch}}] device ({{interface}}): state change: disconnected -> activated"
+      ejemplo: "Jun 14 08:00:12 srv-linux-01 NetworkManager[801]: <info>  [1781416812.1234] device (ens33): state change: disconnected -> activated"
+      campos:
+        interface: "{{interface}}"
+        old_state: "disconnected"
+        new_state: "activated"
+      mitre:
+        relevancia: "contexto_operacional"
+        tecnicas: []
+        razon: "Cambio operativo de estado de interfaz."
+
+    - id: "network_dhcp_lease"
+      nombre: "Lease DHCP asignada"
+      categoria: "red"
+      legitimidad: "legit"
+      severidad_sugerida: "info"
+      fuente: "syslog"
+      programa: "dhclient"
+      plantilla: "{{timestamp}} {{host}} dhclient[{{pid}}]: DHCPACK of {{assigned_ip}} from {{dhcp_server}}"
+      ejemplo: "Jun 14 08:00:13 srv-linux-01 dhclient[910]: DHCPACK of 192.168.1.20 from 192.168.1.1"
+      campos:
+        assigned_ip: "{{assigned_ip}}"
+        dhcp_server: "{{dhcp_server}}"
+      mitre:
+        relevancia: "contexto_operacional"
+        tecnicas: []
+        razon: "Asignación DHCP útil para atribución temporal."
+
+    - id: "firewall_ufw_allow"
+      nombre: "UFW allow"
+      categoria: "firewall"
+      legitimidad: "legit"
+      severidad_sugerida: "info"
+      fuente: "ufw"
+      ruta_linux:
+        ubuntu: "/var/log/ufw.log"
+      programa: "kernel"
+      plantilla: "{{timestamp}} {{host}} kernel: [UFW ALLOW] IN={{interface}} OUT= MAC={{mac}} SRC={{src_ip}} DST={{dst_ip}} LEN={{len}} PROTO={{proto}} SPT={{src_port}} DPT={{dst_port}}"
+      ejemplo: "Jun 14 10:31:14 srv-linux-01 kernel: [UFW ALLOW] IN=ens33 OUT= MAC=00:11:22:33:44:55 SRC=192.168.1.50 DST=192.168.1.20 LEN=60 PROTO=TCP SPT=52244 DPT=22"
+      campos:
+        action: "ALLOW"
+        proto: "TCP"
+        src_ip: "{{src_ip}}"
+        dst_ip: "{{dst_ip}}"
+        dst_port: "{{dst_port}}"
+      mitre:
+        relevancia: "contextual"
+        tecnicas: []
+        razon: "Tráfico permitido; útil para validar exposición o acceso."
+
+    - id: "firewall_ufw_block"
+      nombre: "UFW block"
+      categoria: "firewall"
+      legitimidad: "non-legit"
+      severidad_sugerida: "medium"
+      fuente: "ufw"
+      programa: "kernel"
+      plantilla: "{{timestamp}} {{host}} kernel: [UFW BLOCK] IN={{interface}} OUT= MAC={{mac}} SRC={{src_ip}} DST={{dst_ip}} LEN={{len}} PROTO={{proto}} SPT={{src_port}} DPT={{dst_port}}"
+      ejemplo: "Jun 14 10:32:14 srv-linux-01 kernel: [UFW BLOCK] IN=ens33 OUT= MAC=00:11:22:33:44:55 SRC=203.0.113.10 DST=192.168.1.20 LEN=60 PROTO=TCP SPT=51111 DPT=22"
+      campos:
+        action: "BLOCK"
+        proto: "TCP"
+        src_ip: "{{src_ip}}"
+        dst_ip: "{{dst_ip}}"
+        dst_port: "{{dst_port}}"
+      mitre:
+        relevancia: "contextual"
+        tecnicas:
+          - "T1110"
+          - "T1046"
+        razon: "Bloqueos repetidos pueden indicar escaneo o fuerza bruta."
+
+    - id: "audit_user_login"
+      nombre: "Auditd user login"
+      categoria: "auditd"
+      legitimidad: "legit"
+      severidad_sugerida: "info"
+      fuente: "audit.log"
+      ruta_linux:
+        auditd: "/var/log/audit/audit.log"
+      programa: "auditd"
+      plantilla: "type=USER_LOGIN msg=audit({{audit_time}}:{{audit_id}}): pid={{pid}} uid=0 auid={{uid}} ses={{session_id}} msg='op=login id={{uid}} exe=\"/usr/sbin/sshd\" hostname={{src_ip}} addr={{src_ip}} terminal=/dev/{{tty}} res=success'"
+      ejemplo: "type=USER_LOGIN msg=audit(1781421322.120:450): pid=12345 uid=0 auid=1001 ses=42 msg='op=login id=1001 exe=\"/usr/sbin/sshd\" hostname=192.168.1.50 addr=192.168.1.50 terminal=/dev/pts/0 res=success'"
+      campos:
+        audit_type: "USER_LOGIN"
+        result: "success"
+        auid: "{{uid}}"
+        session_id: "{{session_id}}"
+      mitre:
+        relevancia: "alta_contextual"
+        tecnicas:
+          - "T1021.004"
+          - "T1078"
+        razon: "Auditd confirma login de usuario."
+
+    - id: "audit_user_login_failed"
+      nombre: "Auditd user login failed"
+      categoria: "auditd"
+      legitimidad: "non-legit"
+      severidad_sugerida: "medium"
+      fuente: "audit.log"
+      programa: "auditd"
+      plantilla: "type=USER_LOGIN msg=audit({{audit_time}}:{{audit_id}}): pid={{pid}} uid=0 auid=4294967295 ses=4294967295 msg='op=login acct=\"{{user}}\" exe=\"/usr/sbin/sshd\" hostname={{src_ip}} addr={{src_ip}} terminal=ssh res=failed'"
+      ejemplo: "type=USER_LOGIN msg=audit(1781421325.120:451): pid=12347 uid=0 auid=4294967295 ses=4294967295 msg='op=login acct=\"test\" exe=\"/usr/sbin/sshd\" hostname=203.0.113.10 addr=203.0.113.10 terminal=ssh res=failed'"
+      campos:
+        audit_type: "USER_LOGIN"
+        result: "failed"
+        user: "{{user}}"
+        src_ip: "{{src_ip}}"
+      mitre:
+        relevancia: "alta_contextual"
+        tecnicas:
+          - "T1110"
+          - "T1021.004"
+        razon: "Fallo de login auditado."
+
+    - id: "audit_sudo_command"
+      nombre: "Auditd sudo command"
+      categoria: "auditd"
+      legitimidad: "legit"
+      severidad_sugerida: "info"
+      fuente: "audit.log"
+      programa: "auditd"
+      plantilla: "type=USER_CMD msg=audit({{audit_time}}:{{audit_id}}): pid={{pid}} uid={{uid}} auid={{uid}} ses={{session_id}} msg='cwd=\"{{pwd}}\" cmd=\"{{command_hex}}\" terminal={{tty}} res=success'"
+      ejemplo: "type=USER_CMD msg=audit(1781421483.223:455): pid=12410 uid=1001 auid=1001 ses=42 msg='cwd=\"/home/alice\" cmd=\"73797374656d63746c20737461747573206e67696e78\" terminal=pts/0 res=success'"
+      campos:
+        audit_type: "USER_CMD"
+        result: "success"
+        command_hex: "{{command_hex}}"
+      mitre:
+        relevancia: "alta_contextual"
+        tecnicas:
+          - "T1548.003"
+          - "T1059.004"
+        razon: "Comando auditado en sesión de usuario."
+
+    - id: "audit_execve"
+      nombre: "Auditd execve"
+      categoria: "auditd"
+      legitimidad: "legit"
+      severidad_sugerida: "info"
+      fuente: "audit.log"
+      programa: "auditd"
+      plantilla: "type=EXECVE msg=audit({{audit_time}}:{{audit_id}}): argc={{argc}} a0=\"{{argv0}}\" a1=\"{{argv1}}\""
+      ejemplo: "type=EXECVE msg=audit(1781421483.223:456): argc=3 a0=\"systemctl\" a1=\"status\" a2=\"nginx\""
+      campos:
+        audit_type: "EXECVE"
+        argc: "{{argc}}"
+        argv0: "{{argv0}}"
+        argv1: "{{argv1}}"
+      mitre:
+        relevancia: "alta_contextual"
+        tecnicas:
+          - "T1059.004"
+        razon: "Ejecución de proceso o comando capturada por auditd."
+
+    - id: "audit_sensitive_file_access"
+      nombre: "Auditd acceso a archivo sensible"
+      categoria: "credenciales"
+      legitimidad: "non-legit"
+      severidad_sugerida: "critical"
+      fuente: "audit.log"
+      programa: "auditd"
+      plantilla: "type=PATH msg=audit({{audit_time}}:{{audit_id}}): item=0 name=\"{{sensitive_file}}\" inode={{inode}} dev={{dev}} mode={{mode}} ouid=0 ogid=0 rdev=00:00 nametype=NORMAL"
+      ejemplo: "type=PATH msg=audit(1781421600.111:470): item=0 name=\"/etc/shadow\" inode=1234 dev=08:01 mode=0100640 ouid=0 ogid=0 rdev=00:00 nametype=NORMAL"
+      campos:
+        sensitive_file: "/etc/shadow"
+        audit_type: "PATH"
+      mitre:
+        relevancia: "alta"
+        tecnicas:
+          - "T1003"
+          - "T1552.001"
+        razon: "Acceso a archivo de credenciales o secretos."
+
+    - id: "disk_mount"
+      nombre: "Filesystem montado"
+      categoria: "almacenamiento"
+      legitimidad: "legit"
+      severidad_sugerida: "info"
+      fuente: "syslog"
+      programa: "systemd"
+      plantilla: "{{timestamp}} {{host}} systemd[1]: Mounted {{mount_description}}."
+      ejemplo: "Jun 14 08:00:08 srv-linux-01 systemd[1]: Mounted /boot."
+      campos:
+        mount_description: "{{mount_description}}"
+      mitre:
+        relevancia: "contexto_operacional"
+        tecnicas: []
+        razon: "Montaje operativo de filesystem."
+
+    - id: "disk_space_warning"
+      nombre: "Advertencia de uso de disco"
+      categoria: "almacenamiento"
+      legitimidad: "legit"
+      severidad_sugerida: "warning"
+      fuente: "syslog"
+      programa: "monitoring-agent"
+      plantilla: "{{timestamp}} {{host}} monitoring-agent[{{pid}}]: WARNING disk usage on {{mountpoint}} is {{usage_percent}}%"
+      ejemplo: "Jun 14 12:30:00 srv-linux-01 monitoring-agent[1902]: WARNING disk usage on /var is 82%"
+      campos:
+        mountpoint: "{{mountpoint}}"
+        usage_percent: "{{usage_percent}}"
+      mitre:
+        relevancia: "contexto_operacional"
+        tecnicas: []
+        razon: "Alerta operativa de almacenamiento."
+
+    - id: "nginx_access_get"
+      nombre: "Nginx HTTP GET normal"
+      categoria: "web"
+      legitimidad: "legit"
+      severidad_sugerida: "info"
+      fuente: "nginx_access"
+      ruta_linux:
+        nginx: "/var/log/nginx/access.log"
+      programa: "nginx"
+      plantilla: "{{src_ip}} - {{user_dash}} [{{timestamp_nginx}}] \"GET {{uri}} HTTP/1.1\" {{status}} {{bytes}} \"{{referer}}\" \"{{user_agent}}\""
+      ejemplo: "192.168.1.50 - - [14/Jun/2026:10:32:44 +0200] \"GET / HTTP/1.1\" 200 612 \"-\" \"Mozilla/5.0\""
+      campos:
+        method: "GET"
+        uri: "{{uri}}"
+        status: "{{status}}"
+        bytes: "{{bytes}}"
+        user_agent: "{{user_agent}}"
+      mitre:
+        relevancia: "condicional"
+        tecnicas:
+          - "T1190"
+        razon: "Petición web; solo mapea si contiene explotación o abuso."
+
+    - id: "nginx_access_static_asset"
+      nombre: "Nginx recurso estático"
+      categoria: "web"
+      legitimidad: "legit"
+      severidad_sugerida: "info"
+      fuente: "nginx_access"
+      programa: "nginx"
+      plantilla: "{{src_ip}} - - [{{timestamp_nginx}}] \"GET {{uri}} HTTP/1.1\" {{status}} {{bytes}} \"{{referer}}\" \"{{user_agent}}\""
+      ejemplo: "192.168.1.50 - - [14/Jun/2026:10:32:45 +0200] \"GET /static/app.css HTTP/1.1\" 200 18420 \"http://srv-linux-01/\" \"Mozilla/5.0\""
+      campos:
+        method: "GET"
+        uri: "{{uri}}"
+        status: "{{status}}"
+      mitre:
+        relevancia: "baja_contextual"
+        tecnicas: []
+        razon: "Carga normal de recurso estático."
+
+    - id: "nginx_access_suspicious_uri"
+      nombre: "Nginx URI sospechosa"
+      categoria: "web"
+      legitimidad: "non-legit"
+      severidad_sugerida: "high"
+      fuente: "nginx_access"
+      programa: "nginx"
+      plantilla: "{{src_ip}} - - [{{timestamp_nginx}}] \"GET {{suspicious_uri}} HTTP/1.1\" {{status}} {{bytes}} \"-\" \"{{user_agent}}\""
+      ejemplo: "203.0.113.10 - - [14/Jun/2026:10:40:01 +0200] \"GET /../../etc/passwd HTTP/1.1\" 400 166 \"-\" \"curl/8.0\""
+      campos:
+        method: "GET"
+        uri: "{{suspicious_uri}}"
+        status: "{{status}}"
+        user_agent: "{{user_agent}}"
+      mitre:
+        relevancia: "alta_contextual"
+        tecnicas:
+          - "T1190"
+        razon: "Patrón de explotación, traversal, probing o abuso contra aplicación web."
+
+    - id: "nginx_access_many_404"
+      nombre: "Nginx múltiples 404"
+      categoria: "web"
+      legitimidad: "non-legit"
+      severidad_sugerida: "medium"
+      fuente: "nginx_access"
+      programa: "nginx"
+      plantilla: "{{src_ip}} - - [{{timestamp_nginx}}] \"GET {{uri}} HTTP/1.1\" 404 {{bytes}} \"-\" \"{{user_agent}}\""
+      ejemplo: "203.0.113.10 - - [14/Jun/2026:10:41:01 +0200] \"GET /admin.php HTTP/1.1\" 404 166 \"-\" \"scanner\""
+      campos:
+        method: "GET"
+        uri: "{{uri}}"
+        status: 404
+        user_agent: "{{user_agent}}"
+      mitre:
+        relevancia: "contextual"
+        tecnicas:
+          - "T1595"
+          - "T1190"
+        razon: "Errores repetidos pueden indicar escaneo o enumeración."
+
+    - id: "nginx_error_notice"
+      nombre: "Nginx notice"
+      categoria: "web"
+      legitimidad: "legit"
+      severidad_sugerida: "notice"
+      fuente: "nginx_error"
+      ruta_linux:
+        nginx: "/var/log/nginx/error.log"
+      programa: "nginx"
+      plantilla: "{{timestamp_nginx_error}} [notice] {{pid}}#{{pid}}: start worker process {{worker_pid}}"
+      ejemplo: "2026/06/14 10:21:15 [notice] 1500#1500: start worker process 1501"
+      campos:
+        worker_pid: "{{worker_pid}}"
+      mitre:
+        relevancia: "contexto_operacional"
+        tecnicas: []
+        razon: "Evento interno de nginx."
+
+    - id: "nginx_error_upstream_failure"
+      nombre: "Nginx error upstream"
+      categoria: "web"
+      legitimidad: "non-legit"
+      severidad_sugerida: "medium"
+      fuente: "nginx_error"
+      programa: "nginx"
+      plantilla: "{{timestamp_nginx_error}} [error] {{pid}}#{{pid}}: *{{request_id}} connect() failed while connecting to upstream, client: {{src_ip}}, server: {{server}}, request: \"{{method}} {{uri}} HTTP/1.1\", upstream: \"{{upstream}}\""
+      ejemplo: "2026/06/14 10:42:15 [error] 1500#1500: *100 connect() failed while connecting to upstream, client: 203.0.113.10, server: example.local, request: \"GET /api HTTP/1.1\", upstream: \"http://127.0.0.1:8080/api\""
+      campos:
+        client: "{{src_ip}}"
+        server: "{{server}}"
+        uri: "{{uri}}"
+        upstream: "{{upstream}}"
+      mitre:
+        relevancia: "contextual"
+        tecnicas:
+          - "T1190"
+        razon: "Errores de upstream pueden acompañar probing, abuso o fallo operativo."
+
+    - id: "docker_container_start"
+      nombre: "Docker container start"
+      categoria: "contenedores"
+      legitimidad: "legit"
+      severidad_sugerida: "info"
+      fuente: "journal"
+      programa: "dockerd"
+      plantilla: "{{timestamp}} {{host}} dockerd[{{pid}}]: container start {{container_id}} (image={{image}}, name={{container_name}})"
+      ejemplo: "Jun 14 10:40:02 srv-linux-01 dockerd[1200]: container start 9f2a1c3b4d5e (image=nginx:latest, name=web-test)"
+      campos:
+        container_id: "{{container_id}}"
+        image: "{{image}}"
+        container_name: "{{container_name}}"
+      mitre:
+        relevancia: "alta_contextual"
+        tecnicas:
+          - "T1610"
+          - "T1609"
+        razon: "Inicio de contenedor; relevante en entornos Docker."
+
+    - id: "docker_container_stop"
+      nombre: "Docker container stop"
+      categoria: "contenedores"
+      legitimidad: "legit"
+      severidad_sugerida: "info"
+      fuente: "journal"
+      programa: "dockerd"
+      plantilla: "{{timestamp}} {{host}} dockerd[{{pid}}]: container stop {{container_id}} (image={{image}}, name={{container_name}})"
+      ejemplo: "Jun 14 11:05:10 srv-linux-01 dockerd[1200]: container stop 9f2a1c3b4d5e (image=nginx:latest, name=web-test)"
+      campos:
+        container_id: "{{container_id}}"
+        image: "{{image}}"
+        container_name: "{{container_name}}"
+      mitre:
+        relevancia: "contextual"
+        tecnicas:
+          - "T1610"
+        razon: "Parada de contenedor."
+
+    - id: "docker_privileged_container_start"
+      nombre: "Docker container privilegiado"
+      categoria: "contenedores"
+      legitimidad: "non-legit"
+      severidad_sugerida: "critical"
+      fuente: "journal"
+      programa: "dockerd"
+      plantilla: "{{timestamp}} {{host}} dockerd[{{pid}}]: container start {{container_id}} (image={{image}}, name={{container_name}}, privileged=true, mounts={{mounts}})"
+      ejemplo: "Jun 14 11:10:02 srv-linux-01 dockerd[1200]: container start abc123def456 (image=unknown:latest, name=test-admin, privileged=true, mounts=/:/host)"
+      campos:
+        container_id: "{{container_id}}"
+        image: "{{image}}"
+        container_name: "{{container_name}}"
+        privileged: true
+        mounts: "{{mounts}}"
+      mitre:
+        relevancia: "alta"
+        tecnicas:
+          - "T1610"
+          - "T1609"
+        razon: "Contenedor con privilegios o montajes sensibles."
+
+    - id: "kernel_process_killed_oom"
+      nombre: "Proceso finalizado por OOM"
+      categoria: "sistema"
+      legitimidad: "legit"
+      severidad_sugerida: "warning"
+      fuente: "kern.log"
+      programa: "kernel"
+      plantilla: "{{timestamp}} {{host}} kernel: Out of memory: Killed process {{pid}} ({{process_name}}) total-vm:{{total_vm}}kB"
+      ejemplo: "Jun 14 13:20:10 srv-linux-01 kernel: Out of memory: Killed process 2345 (java) total-vm:2048000kB"
+      campos:
+        pid: "{{pid}}"
+        process_name: "{{process_name}}"
+        total_vm: "{{total_vm}}"
+      mitre:
+        relevancia: "contexto_operacional"
+        tecnicas: []
+        razon: "Evento operativo de memoria."
+
+    - id: "kernel_usb_device_attached"
+      nombre: "Dispositivo USB conectado"
+      categoria: "hardware"
+      legitimidad: "legit"
+      severidad_sugerida: "info"
+      fuente: "kern.log"
+      programa: "kernel"
+      plantilla: "{{timestamp}} {{host}} kernel: usb {{usb_bus}}: new high-speed USB device number {{device_number}} using {{driver}}"
+      ejemplo: "Jun 14 14:00:01 srv-linux-01 kernel: usb 1-1: new high-speed USB device number 2 using xhci_hcd"
+      campos:
+        usb_bus: "{{usb_bus}}"
+        device_number: "{{device_number}}"
+        driver: "{{driver}}"
+      mitre:
+        relevancia: "contextual"
+        tecnicas:
+          - "T1091"
+        razon: "Dispositivo extraíble; puede ser normal o sospechoso según política."
+
+    - id: "file_integrity_sensitive_change"
+      nombre: "Cambio en archivo sensible"
+      categoria: "integridad_archivos"
+      legitimidad: "non-legit"
+      severidad_sugerida: "high"
+      fuente: "fim"
+      programa: "wazuh-agent"
+      plantilla: "{{timestamp}} {{host}} wazuh-agent: File '{{file_path}}' modified by user '{{user}}'"
+      ejemplo: "Jun 14 15:00:01 srv-linux-01 wazuh-agent: File '/etc/sudoers' modified by user 'root'"
+      campos:
+        file_path: "{{file_path}}"
+        user: "{{user}}"
+        action: "modified"
+      mitre:
+        relevancia: "alta"
+        tecnicas:
+          - "T1548.003"
+          - "T1222.002"
+        razon: "Modificación de archivo de privilegios, configuración o seguridad."
+
+    - id: "file_integrity_authorized_keys_change"
+      nombre: "Cambio en authorized_keys"
+      categoria: "persistencia"
+      legitimidad: "non-legit"
+      severidad_sugerida: "critical"
+      fuente: "fim"
+      programa: "wazuh-agent"
+      plantilla: "{{timestamp}} {{host}} wazuh-agent: File '{{home}}/.ssh/authorized_keys' modified by user '{{user}}'"
+      ejemplo: "Jun 14 15:05:01 srv-linux-01 wazuh-agent: File '/home/alice/.ssh/authorized_keys' modified by user 'root'"
+      campos:
+        home: "{{home}}"
+        user: "{{user}}"
+        action: "modified"
+      mitre:
+        relevancia: "alta"
+        tecnicas:
+          - "T1098.004"
+        razon: "Adición o modificación de claves SSH autorizadas."
+
+    - id: "process_temp_execution"
+      nombre: "Proceso ejecutado desde ruta temporal"
+      categoria: "ejecucion"
+      legitimidad: "non-legit"
+      severidad_sugerida: "high"
+      fuente: "audit.log"
+      programa: "auditd"
+      plantilla: "type=EXECVE msg=audit({{audit_time}}:{{audit_id}}): argc={{argc}} a0=\"{{temp_path}}\""
+      ejemplo: "type=EXECVE msg=audit(1781421800.100:480): argc=1 a0=\"/tmp/task\""
+      campos:
+        temp_path: "{{temp_path}}"
+        audit_type: "EXECVE"
+      mitre:
+        relevancia: "alta"
+        tecnicas:
+          - "T1059.004"
+          - "T1105"
+        razon: "Ejecución desde /tmp, /dev/shm o /var/tmp."
+
+    - id: "process_base64_pipe_shell"
+      nombre: "Base64 decodificado hacia shell"
+      categoria: "ofuscacion_ejecucion"
+      legitimidad: "non-legit"
+      severidad_sugerida: "critical"
+      fuente: "audit.log"
+      programa: "auditd"
+      plantilla: "type=EXECVE msg=audit({{audit_time}}:{{audit_id}}): argc={{argc}} a0=\"bash\" a1=\"-c\" a2=\"{{sanitized_encoded_command}}\""
+      ejemplo: "type=EXECVE msg=audit(1781421810.100:481): argc=3 a0=\"bash\" a1=\"-c\" a2=\"echo [BASE64_REDACTED] | base64 -d | bash\""
+      campos:
+        interpreter: "bash"
+        command_pattern: "base64_decode_pipe_shell"
+      mitre:
+        relevancia: "alta"
+        tecnicas:
+          - "T1027"
+          - "T1059.004"
+        razon: "Ofuscación y ejecución por shell."
+
+    - id: "process_reverse_shell_pattern"
+      nombre: "Patrón de shell inversa"
+      categoria: "shell_remota"
+      legitimidad: "non-legit"
+      severidad_sugerida: "critical"
+      fuente: "audit.log"
+      programa: "auditd"
+      plantilla: "type=EXECVE msg=audit({{audit_time}}:{{audit_id}}): argc={{argc}} a0=\"{{interpreter}}\" a1=\"{{arg1}}\" a2=\"[REDACTED_REVERSE_SHELL_PATTERN]\""
+      ejemplo: "type=EXECVE msg=audit(1781421820.100:482): argc=3 a0=\"bash\" a1=\"-c\" a2=\"[REDACTED_REVERSE_SHELL_PATTERN]\""
+      campos:
+        interpreter: "{{interpreter}}"
+        pattern: "reverse_shell_sanitized"
+      mitre:
+        relevancia: "alta"
+        tecnicas:
+          - "T1059.004"
+          - "T1105"
+        razon: "Patrón compatible con shell remota no autorizada."
+
+    - id: "process_tunnel_ssh_reverse"
+      nombre: "Túnel SSH reverso"
+      categoria: "tunneling"
+      legitimidad: "non-legit"
+      severidad_sugerida: "critical"
+      fuente: "audit.log"
+      programa: "auditd"
+      plantilla: "type=EXECVE msg=audit({{audit_time}}:{{audit_id}}): argc={{argc}} a0=\"ssh\" a1=\"-R\" a2=\"[REDACTED_TUNNEL]\""
+      ejemplo: "type=EXECVE msg=audit(1781421830.100:483): argc=3 a0=\"ssh\" a1=\"-R\" a2=\"[REDACTED_TUNNEL]\""
+      campos:
+        command: "ssh"
+        tunnel_type: "reverse"
+      mitre:
+        relevancia: "alta"
+        tecnicas:
+          - "T1572"
+        razon: "Túnel SSH reverso hacia destino no autorizado."
+
+    - id: "log_file_truncated"
+      nombre: "Archivo de log truncado"
+      categoria: "borrado_logs"
+      legitimidad: "non-legit"
+      severidad_sugerida: "critical"
+      fuente: "audit.log"
+      programa: "auditd"
+      plantilla: "type=SYSCALL msg=audit({{audit_time}}:{{audit_id}}): arch={{arch}} syscall=truncate success=yes exe=\"{{exe}}\" key=\"log_tampering\""
+      ejemplo: "type=SYSCALL msg=audit(1781421900.200:500): arch=c000003e syscall=truncate success=yes exe=\"/usr/bin/truncate\" key=\"log_tampering\""
+      campos:
+        syscall: "truncate"
+        result: "success"
+        key: "log_tampering"
+      mitre:
+        relevancia: "alta"
+        tecnicas:
+          - "T1685.006"
+        razon: "Truncado de logs, posible evasión."
+
+    - id: "bash_history_cleared"
+      nombre: "Historial de shell limpiado"
+      categoria: "borrado_historial"
+      legitimidad: "non-legit"
+      severidad_sugerida: "high"
+      fuente: "audit.log"
+      programa: "auditd"
+      plantilla: "type=EXECVE msg=audit({{audit_time}}:{{audit_id}}): argc=2 a0=\"history\" a1=\"-c\""
+      ejemplo: "type=EXECVE msg=audit(1781421910.200:501): argc=2 a0=\"history\" a1=\"-c\""
+      campos:
+        command: "history -c"
+      mitre:
+        relevancia: "alta"
+        tecnicas:
+          - "T1070.003"
+        razon: "Limpieza manual de historial de comandos."
+
+    - id: "history_disabled"
+      nombre: "Historial de shell desactivado"
+      categoria: "borrado_historial"
+      legitimidad: "non-legit"
+      severidad_sugerida: "high"
+      fuente: "audit.log"
+      programa: "auditd"
+      plantilla: "type=EXECVE msg=audit({{audit_time}}:{{audit_id}}): argc=3 a0=\"bash\" a1=\"-c\" a2=\"unset HISTFILE\""
+      ejemplo: "type=EXECVE msg=audit(1781421920.200:502): argc=3 a0=\"bash\" a1=\"-c\" a2=\"unset HISTFILE\""
+      campos:
+        command: "unset HISTFILE"
+      mitre:
+        relevancia: "alta"
+        tecnicas:
+          - "T1690"
+        razon: "Intento de evitar registro del historial."
+
+    - id: "user_created"
+      nombre: "Usuario local creado"
+      categoria: "cuentas"
+      legitimidad: "legit"
+      severidad_sugerida: "info"
+      fuente: "auth.log"
+      programa: "useradd"
+      plantilla: "{{timestamp}} {{host}} useradd[{{pid}}]: new user: name={{new_user}}, UID={{new_uid}}, GID={{new_gid}}, home={{home}}, shell={{shell}}"
+      ejemplo: "Jun 14 16:00:01 srv-linux-01 useradd[3001]: new user: name=deploy, UID=1002, GID=1002, home=/home/deploy, shell=/bin/bash"
+      campos:
+        new_user: "{{new_user}}"
+        new_uid: "{{new_uid}}"
+        home: "{{home}}"
+        shell: "{{shell}}"
+      mitre:
+        relevancia: "condicional"
+        tecnicas:
+          - "T1136.001"
+        razon: "Creación de cuenta; normal si está aprobada."
+
+    - id: "user_added_to_sudo_group"
+      nombre: "Usuario añadido a grupo sudo"
+      categoria: "cuentas"
+      legitimidad: "non-legit"
+      severidad_sugerida: "critical"
+      fuente: "auth.log"
+      programa: "usermod"
+      plantilla: "{{timestamp}} {{host}} usermod[{{pid}}]: add '{{user}}' to group '{{privileged_group}}'"
+      ejemplo: "Jun 14 16:02:01 srv-linux-01 usermod[3002]: add 'deploy' to group 'sudo'"
+      campos:
+        user: "{{user}}"
+        privileged_group: "sudo"
+      mitre:
+        relevancia: "alta"
+        tecnicas:
+          - "T1136.001"
+          - "T1548.003"
+        razon: "Asignación de privilegios administrativos a cuenta local."
+
+    - id: "ssh_authorized_keys_modified"
+      nombre: "authorized_keys modificado"
+      categoria: "persistencia"
+      legitimidad: "non-legit"
+      severidad_sugerida: "critical"
+      fuente: "audit.log"
+      programa: "auditd"
+      plantilla: "type=PATH msg=audit({{audit_time}}:{{audit_id}}): item=0 name=\"{{home}}/.ssh/authorized_keys\" nametype=NORMAL"
+      ejemplo: "type=PATH msg=audit(1781422000.100:520): item=0 name=\"/home/alice/.ssh/authorized_keys\" nametype=NORMAL"
+      campos:
+        file_path: "{{home}}/.ssh/authorized_keys"
+      mitre:
+        relevancia: "alta"
+        tecnicas:
+          - "T1098.004"
+        razon: "Modificación de claves SSH autorizadas."
+
+    - id: "sudoers_modified"
+      nombre: "sudoers modificado"
+      categoria: "privilegios"
+      legitimidad: "non-legit"
+      severidad_sugerida: "critical"
+      fuente: "audit.log"
+      programa: "auditd"
+      plantilla: "type=PATH msg=audit({{audit_time}}:{{audit_id}}): item=0 name=\"/etc/sudoers\" nametype=NORMAL"
+      ejemplo: "type=PATH msg=audit(1781422010.100:521): item=0 name=\"/etc/sudoers\" nametype=NORMAL"
+      campos:
+        file_path: "/etc/sudoers"
+      mitre:
+        relevancia: "alta"
+        tecnicas:
+          - "T1548.003"
+        razon: "Modificación de política sudo."
+
+    - id: "permissions_sensitive_chmod"
+      nombre: "Permisos sensibles modificados"
+      categoria: "permisos"
+      legitimidad: "non-legit"
+      severidad_sugerida: "high"
+      fuente: "audit.log"
+      programa: "auditd"
+      plantilla: "type=SYSCALL msg=audit({{audit_time}}:{{audit_id}}): syscall=chmod success=yes exe=\"/usr/bin/chmod\" key=\"sensitive_permissions\""
+      ejemplo: "type=SYSCALL msg=audit(1781422020.100:522): syscall=chmod success=yes exe=\"/usr/bin/chmod\" key=\"sensitive_permissions\""
+      campos:
+        syscall: "chmod"
+        key: "sensitive_permissions"
+      mitre:
+        relevancia: "alta"
+        tecnicas:
+          - "T1222.002"
+        razon: "Cambio peligroso de permisos."
+
+    - id: "tcpdump_capture_started"
+      nombre: "Captura tcpdump iniciada"
+      categoria: "captura_red"
+      legitimidad: "non-legit"
+      severidad_sugerida: "medium"
+      fuente: "audit.log"
+      programa: "auditd"
+      plantilla: "type=EXECVE msg=audit({{audit_time}}:{{audit_id}}): argc={{argc}} a0=\"tcpdump\" a1=\"-i\" a2=\"{{interface}}\""
+      ejemplo: "type=EXECVE msg=audit(1781422030.100:523): argc=5 a0=\"tcpdump\" a1=\"-i\" a2=\"any\" a3=\"-w\" a4=\"/tmp/capture.pcap\""
+      campos:
+        tool: "tcpdump"
+        interface: "{{interface}}"
+      mitre:
+        relevancia: "alta_contextual"
+        tecnicas:
+          - "T1040"
+        razon: "Captura de tráfico; sospechosa si host/usuario no están autorizados."
+
+    - id: "suid_bit_set_tmp"
+      nombre: "SUID en ruta temporal"
+      categoria: "elevacion_privilegios"
+      legitimidad: "non-legit"
+      severidad_sugerida: "critical"
+      fuente: "audit.log"
+      programa: "auditd"
+      plantilla: "type=SYSCALL msg=audit({{audit_time}}:{{audit_id}}): syscall=chmod success=yes exe=\"/usr/bin/chmod\" a1=\"4755\" key=\"suid_tmp\""
+      ejemplo: "type=SYSCALL msg=audit(1781422040.100:524): syscall=chmod success=yes exe=\"/usr/bin/chmod\" a1=\"4755\" key=\"suid_tmp\""
+      campos:
+        syscall: "chmod"
+        mode: "4755"
+        key: "suid_tmp"
+      mitre:
+        relevancia: "alta"
+        tecnicas:
+          - "T1548.001"
+        razon: "Asignación SUID a binario potencialmente sospechoso."
+
+    - id: "ld_so_preload_modified"
+      nombre: "ld.so.preload modificado"
+      categoria: "persistencia_evasion"
+      legitimidad: "non-legit"
+      severidad_sugerida: "critical"
+      fuente: "audit.log"
+      programa: "auditd"
+      plantilla: "type=PATH msg=audit({{audit_time}}:{{audit_id}}): item=0 name=\"/etc/ld.so.preload\" nametype=NORMAL"
+      ejemplo: "type=PATH msg=audit(1781422050.100:525): item=0 name=\"/etc/ld.so.preload\" nametype=NORMAL"
+      campos:
+        file_path: "/etc/ld.so.preload"
+      mitre:
+        relevancia: "alta"
+        tecnicas:
+          - "T1574.006"
+        razon: "Modificación de librerías precargadas."
+
+    - id: "sshd_config_modified"
+      nombre: "sshd_config modificado"
+      categoria: "persistencia_acceso"
+      legitimidad: "non-legit"
+      severidad_sugerida: "high"
+      fuente: "audit.log"
+      programa: "auditd"
+      plantilla: "type=PATH msg=audit({{audit_time}}:{{audit_id}}): item=0 name=\"/etc/ssh/sshd_config\" nametype=NORMAL"
+      ejemplo: "type=PATH msg=audit(1781422060.100:526): item=0 name=\"/etc/ssh/sshd_config\" nametype=NORMAL"
+      campos:
+        file_path: "/etc/ssh/sshd_config"
+      mitre:
+        relevancia: "alta"
+        tecnicas:
+          - "T1021.004"
+          - "T1562"
+        razon: "Cambio de configuración SSH."
+
+    - id: "data_archive_tmp"
+      nombre: "Archivo comprimido en ruta temporal"
+      categoria: "preparacion_exfiltracion"
+      legitimidad: "non-legit"
+      severidad_sugerida: "high"
+      fuente: "audit.log"
+      programa: "auditd"
+      plantilla: "type=EXECVE msg=audit({{audit_time}}:{{audit_id}}): argc={{argc}} a0=\"tar\" a1=\"-czf\" a2=\"{{archive_path}}\""
+      ejemplo: "type=EXECVE msg=audit(1781422070.100:527): argc=4 a0=\"tar\" a1=\"-czf\" a2=\"/tmp/archive.tgz\" a3=\"/etc\""
+      campos:
+        tool: "tar"
+        archive_path: "{{archive_path}}"
+      mitre:
+        relevancia: "alta"
+        tecnicas:
+          - "T1005"
+        razon: "Preparación de datos locales para posible transferencia."
+
+    - id: "external_scp_transfer"
+      nombre: "Transferencia SCP externa"
+      categoria: "exfiltracion"
+      legitimidad: "non-legit"
+      severidad_sugerida: "critical"
+      fuente: "audit.log"
+      programa: "auditd"
+      plantilla: "type=EXECVE msg=audit({{audit_time}}:{{audit_id}}): argc={{argc}} a0=\"scp\" a1=\"{{file_path}}\" a2=\"{{external_destination}}\""
+      ejemplo: "type=EXECVE msg=audit(1781422080.100:528): argc=3 a0=\"scp\" a1=\"/tmp/archive.tgz\" a2=\"user@[EXTERNAL_IP]:/path/\""
+      campos:
+        tool: "scp"
+        file_path: "{{file_path}}"
+        external_destination: "{{external_destination}}"
+      mitre:
+        relevancia: "alta"
+        tecnicas:
+          - "T1048"
+        razon: "Transferencia de archivo a destino externo."
+
+    - id: "webshell_like_exec"
+      nombre: "Ejecución tipo webshell"
+      categoria: "ejecucion_web"
+      legitimidad: "non-legit"
+      severidad_sugerida: "critical"
+      fuente: "audit.log"
+      programa: "auditd"
+      plantilla: "type=EXECVE msg=audit({{audit_time}}:{{audit_id}}): argc={{argc}} a0=\"{{interpreter}}\" a1=\"{{inline_flag}}\" a2=\"[REDACTED_INLINE_EXEC]\""
+      ejemplo: "type=EXECVE msg=audit(1781422090.100:529): argc=3 a0=\"php\" a1=\"-r\" a2=\"[REDACTED_INLINE_EXEC]\""
+      campos:
+        interpreter: "{{interpreter}}"
+        inline_flag: "{{inline_flag}}"
+      mitre:
+        relevancia: "alta"
+        tecnicas:
+          - "T1059"
+          - "T1190"
+        razon: "Ejecución inline asociada a proceso web o explotación."
+
+    - id: "remote_mount_created"
+      nombre: "Montaje remoto creado"
+      categoria: "almacenamiento"
+      legitimidad: "non-legit"
+      severidad_sugerida: "medium"
+      fuente: "syslog"
+      programa: "mount"
+      plantilla: "{{timestamp}} {{host}} mount[{{pid}}]: mounted {{remote_resource}} on {{mountpoint}}"
+      ejemplo: "Jun 14 17:00:01 srv-linux-01 mount[4001]: mounted [REMOTE_RESOURCE] on /mnt/data"
+      campos:
+        remote_resource: "{{remote_resource}}"
+        mountpoint: "{{mountpoint}}"
+      mitre:
+        relevancia: "contextual"
+        tecnicas:
+          - "T1105"
+        razon: "Montaje remoto no aprobado puede facilitar transferencia o staging."
+
+    - id: "dns_external_lookup_suspicious"
+      nombre: "Consulta DNS externa sospechosa"
+      categoria: "red"
+      legitimidad: "non-legit"
+      severidad_sugerida: "medium"
+      fuente: "dns"
+      programa: "systemd-resolved"
+      plantilla: "{{timestamp}} {{host}} systemd-resolved[{{pid}}]: query {{domain}} IN A"
+      ejemplo: "Jun 14 17:05:01 srv-linux-01 systemd-resolved[700]: query example-external.invalid IN A"
+      campos:
+        domain: "{{domain}}"
+        query_type: "A"
+      mitre:
+        relevancia: "contextual"
+        tecnicas:
+          - "T1071.004"
+        razon: "Consulta DNS a dominio no aprobado o recién observado."
+
+    - id: "outbound_connection_external"
+      nombre: "Conexión saliente externa"
+      categoria: "red"
+      legitimidad: "non-legit"
+      severidad_sugerida: "medium"
+      fuente: "firewall"
+      programa: "kernel"
+      plantilla: "{{timestamp}} {{host}} kernel: OUTBOUND SRC={{src_ip}} DST={{external_ip}} PROTO={{proto}} DPT={{dst_port}}"
+      ejemplo: "Jun 14 17:06:01 srv-linux-01 kernel: OUTBOUND SRC=192.168.1.20 DST=203.0.113.10 PROTO=TCP DPT=4444"
+      campos:
+        src_ip: "{{src_ip}}"
+        external_ip: "{{external_ip}}"
+        proto: "{{proto}}"
+        dst_port: "{{dst_port}}"
+      mitre:
+        relevancia: "contextual"
+        tecnicas:
+          - "T1105"
+          - "T1572"
+        razon: "Conexión saliente a destino o puerto no aprobado."

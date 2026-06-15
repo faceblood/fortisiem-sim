@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -28,6 +29,8 @@ from .mitre import (
     phase_technique_label,
 )
 from .models import EmittedEmail, EmittedEvent, RunSummary, Scenario, SendOptions
+from .db.scenario_steps_repo import list_step_scenario_ids, load_steps_builder_payload
+from .mitre import FORTIGATE_PLACEHOLDERS
 from .storage import (
     enable_sql_storage,
     list_scenario_refs,
@@ -61,14 +64,32 @@ def _parse_run_args(data: dict) -> tuple[str, Scenario, SendOptions, str]:
     return scenario_id, scenario, options, phase
 
 
+def _event_units(event, chain_counts: dict[str, int], count_override: int | None) -> int:
+    chain_id = str(getattr(event, "chain_id", "") or "").strip()
+    if chain_id:
+        return max(1, chain_counts.get(chain_id, 1))
+    n = count_override if count_override is not None else event.count
+    return max(1, n)
+
+
 def _expected_events(scenario: Scenario, phase_filter: str, count_override: int | None) -> int:
+    from .db.activity_chains_repo import step_counts_by_id
+
+    chain_counts = step_counts_by_id()
     total = 0
     for phase in scenario.phases:
         if phase_filter and phase.name != phase_filter:
             continue
+        if getattr(phase, "phase_type", "mitre") == "email":
+            total += len(phase.emails)
+            continue
+        if getattr(phase, "phase_type", "mitre") == "chain":
+            for event in phase.events:
+                total += _event_units(event, chain_counts, count_override)
+            continue
         for event in phase.events:
-            n = count_override if count_override is not None else event.count
-            total += max(1, n)
+            total += _event_units(event, chain_counts, count_override)
+        total += len(phase.emails)
     return total
 
 
@@ -76,14 +97,24 @@ def _summary_dict(summary: RunSummary) -> dict:
     return {"total": summary.total, "sent": summary.sent, "dry_run": summary.dry_run}
 
 
-def _phase_run_total(ph) -> int:
-    if getattr(ph, "phase_type", "mitre") == "email":
+def _phase_run_total(ph, chain_counts: dict[str, int] | None = None) -> int:
+    ptype = getattr(ph, "phase_type", "mitre")
+    if ptype == "email":
         return len(ph.emails)
-    return sum(e.count for e in ph.events) + len(ph.emails)
+    if chain_counts is None:
+        from .db.activity_chains_repo import step_counts_by_id
+
+        chain_counts = step_counts_by_id()
+    if ptype == "chain":
+        return sum(_event_units(e, chain_counts, None) for e in ph.events)
+    return sum(_event_units(e, chain_counts, None) for e in ph.events) + len(ph.emails)
 
 
 def _scenario_payload(scenario_id: str) -> dict:
+    from .db.activity_chains_repo import step_counts_by_id
+
     sc = load_scenario_data(scenario_id)
+    chain_counts = step_counts_by_id()
     return {
         "name": sc.name,
         "description": sc.description,
@@ -98,8 +129,16 @@ def _scenario_payload(scenario_id: str) -> dict:
                 "mitre_tactic": phase_tactic_id(ph) or ph.mitre_tactic,
                 "tactic_name": phase_tactic_name(ph),
                 "mitre_techniques": phase_technique_ids(ph),
-                "total": _phase_run_total(ph),
-                "events": [{"id": e.id, "count": e.count, "actor": e.actor} for e in ph.events],
+                "total": _phase_run_total(ph, chain_counts),
+                "events": [
+                    {
+                        "id": e.id,
+                        "chain_id": getattr(e, "chain_id", "") or "",
+                        "count": e.count,
+                        "actor": e.actor,
+                    }
+                    for e in ph.events
+                ],
             }
             for ph in sc.phases
         ],
@@ -123,15 +162,34 @@ def _email_templates_dict() -> dict[str, dict[str, str]]:
 
 def _scenario_list_payload() -> list[dict]:
     items: list[dict] = []
+    seen: set[str] = set()
+    try:
+        for scenario_id in list_step_scenario_ids():
+            seen.add(scenario_id)
+            payload = load_steps_builder_payload(scenario_id)
+            total = sum(len(p.get("events", [])) for p in payload.get("phases", []))
+            items.append({
+                "id": scenario_id,
+                "file": f"{scenario_id}.sql",
+                "name": payload.get("name", scenario_id),
+                "description": payload.get("description", ""),
+                "phases": len(payload.get("phases", [])),
+                "events": total,
+                "timeline_minutes": 0,
+                "source": "scenario_steps",
+            })
+    except Exception:
+        pass
     for scenario_id in list_scenario_refs():
+        if scenario_id in seen:
+            continue
         sc = load_scenario_data(scenario_id)
+        from .db.activity_chains_repo import step_counts_by_id
+
+        chain_counts = step_counts_by_id()
         total_events = 0
         for ph in sc.phases:
-            if ph.phase_type == "email":
-                total_events += len(ph.emails)
-            else:
-                total_events += sum(e.count for e in ph.events)
-                total_events += len(ph.emails)
+            total_events += _phase_run_total(ph, chain_counts)
         items.append({
             "id": scenario_id,
             "file": f"{scenario_id}.yml",
@@ -148,9 +206,12 @@ def create_app(templates_path: Path | None = None):
     try:
         from flask import Flask, Response, jsonify, request, send_from_directory
     except ImportError as exc:
-        raise RuntimeError("Flask no instalado. Ejecuta: pip install flask") from exc
+        raise RuntimeError(
+            'Flask no instalado. Ejecuta desde fortisiem-sim: '
+            'python3 -m pip install -e ".[web]"'
+        ) from exc
 
-    enable_sql_storage(seed_from_yaml=True)
+    enable_sql_storage(seed_from_yaml=False)
     app = Flask(__name__, static_folder=str(_STATIC), static_url_path="/static")
     base_tpath = templates_path or default_templates_path()
     catalog_state: dict[str, Any] = {
@@ -331,15 +392,233 @@ def create_app(templates_path: Path | None = None):
             return jsonify({"error": str(exc)}), 400
         return jsonify({"ok": True, "catalog": list_email_catalog()})
 
+    @app.get("/api/events/<event_id>")
+    def api_event_get(event_id: str):
+        from .db.events_repo import load_event_detail
+
+        detail = load_event_detail(event_id)
+        if not detail:
+            return jsonify({"error": "Evento no encontrado"}), 404
+        return jsonify(detail)
+
+    @app.put("/api/events/<event_id>")
+    def api_event_update(event_id: str):
+        from .db.events_repo import load_event_detail, save_event_from_api
+
+        data = request.get_json(force=True) or {}
+        if not str(data.get("body", "")).strip():
+            return jsonify({"error": "body requerido"}), 400
+        if not str(data.get("name", "")).strip():
+            return jsonify({"error": "name requerido"}), 400
+        try:
+            save_event_from_api(event_id, data)
+        except (ValueError, TypeError) as exc:
+            return jsonify({"error": str(exc)}), 400
+        templates = _reload_templates()
+        detail = load_event_detail(event_id)
+        catalog = build_event_catalog(templates)
+        return jsonify({
+            "ok": True,
+            "event": detail,
+            "count": len(templates),
+            "catalog": catalog,
+            "by_tactic": index_events_by_tactic(catalog),
+        })
+
+    @app.post("/api/events")
+    def api_event_create():
+        from .db.events_repo import load_event_detail, save_event_from_api
+
+        data = request.get_json(force=True) or {}
+        event_id = str(data.get("id", "")).strip()
+        if not event_id:
+            return jsonify({"error": "id requerido"}), 400
+        if not re.match(r"^[a-zA-Z0-9_.-]+$", event_id):
+            return jsonify({"error": "id inválido (usa letras, números, _, -, .)"}), 400
+        templates = _current_templates()
+        if event_id in templates:
+            return jsonify({"error": f"El evento {event_id!r} ya existe"}), 409
+        try:
+            save_event_from_api(event_id, data)
+        except (ValueError, TypeError) as exc:
+            return jsonify({"error": str(exc)}), 400
+        templates = _reload_templates()
+        detail = load_event_detail(event_id)
+        catalog = build_event_catalog(templates)
+        return jsonify({
+            "ok": True,
+            "event": detail,
+            "count": len(templates),
+            "catalog": catalog,
+            "by_tactic": index_events_by_tactic(catalog),
+        })
+
+    @app.delete("/api/events/<event_id>")
+    def api_event_delete(event_id: str):
+        from .db.events_repo import delete_event
+
+        try:
+            if not delete_event(event_id):
+                return jsonify({"error": "Evento no encontrado"}), 404
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        templates = _reload_templates()
+        catalog = build_event_catalog(templates)
+        return jsonify({
+            "ok": True,
+            "count": len(templates),
+            "catalog": catalog,
+            "by_tactic": index_events_by_tactic(catalog),
+        })
+
+    @app.get("/api/commands")
+    def api_commands_list():
+        from .db.command_repo import LINUX_POOL, load_commands, command_pool_stats
+
+        pool = request.args.get("pool", LINUX_POOL).strip() or LINUX_POOL
+        legitimacy = request.args.get("legitimacy", "").strip()
+        commands = load_commands(pool, legitimacy=legitimacy)
+        stats = command_pool_stats()
+        return jsonify({
+            "pool": pool,
+            "commands": commands,
+            "count": len(commands),
+            "stats": stats,
+        })
+
+    @app.post("/api/commands")
+    def api_commands_add():
+        from .db.command_repo import LINUX_POOL, upsert_command
+        from .db.connection import get_connection
+
+        data = request.get_json(force=True) or {}
+        value = str(data.get("value") or data.get("command") or "").strip()
+        if not value:
+            return jsonify({"error": "value requerido"}), 400
+        legitimacy = str(data.get("legitimacy", "illegitimate")).strip().lower()
+        if legitimacy not in {"legitimate", "illegitimate"}:
+            return jsonify({"error": "legitimacy debe ser legitimate o illegitimate"}), 400
+        pool = str(data.get("pool_name", LINUX_POOL)).strip() or LINUX_POOL
+        conn = get_connection()
+        try:
+            upsert_command(
+                conn,
+                pool_name=pool,
+                value=value,
+                legitimacy=legitimacy,
+                category=str(data.get("category", "")).strip(),
+                description=str(data.get("description", "")).strip(),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        from .db.command_repo import load_commands, command_pool_stats
+
+        return jsonify({
+            "ok": True,
+            "commands": load_commands(pool),
+            "stats": command_pool_stats(),
+        })
+
+    @app.put("/api/commands/<int:command_id>")
+    def api_commands_update(command_id: int):
+        from .db.command_repo import load_commands, command_pool_stats, update_command_by_id
+
+        data = request.get_json(force=True) or {}
+        if not update_command_by_id(command_id, data):
+            return jsonify({"error": "Comando no encontrado o value vacío"}), 404
+        return jsonify({"ok": True, "commands": load_commands(), "stats": command_pool_stats()})
+
+    @app.delete("/api/commands/<int:command_id>")
+    def api_commands_delete(command_id: int):
+        from .db.command_repo import delete_command, load_commands, command_pool_stats
+
+        if not delete_command(command_id):
+            return jsonify({"error": "Comando no encontrado"}), 404
+        return jsonify({
+            "ok": True,
+            "commands": load_commands(),
+            "stats": command_pool_stats(),
+        })
+
+    @app.get("/api/chains")
+    def api_chains_list():
+        from .db.activity_chains_repo import chain_stats, list_chains
+
+        legitimacy = request.args.get("legitimacy", "").strip()
+        source = request.args.get("source", "linux").strip() or "linux"
+        chains = list_chains(legitimacy=legitimacy, source_system=source)
+        return jsonify({
+            "chains": chains,
+            "count": len(chains),
+            "stats": chain_stats(),
+        })
+
+    @app.get("/api/chains/<chain_id>")
+    def api_chain_detail(chain_id: str):
+        from .db.activity_chains_repo import chain_detail_payload
+
+        detail = chain_detail_payload(chain_id)
+        if not detail:
+            return jsonify({"error": "Cadena no encontrada"}), 404
+        return jsonify(detail)
+
+    @app.post("/api/chains/import")
+    def api_chains_import():
+        from .db.import_activity_chains import import_activity_chains
+
+        result = import_activity_chains()
+        return jsonify({k: v for k, v in result.items() if k != "ids"})
+
+    @app.put("/api/chains/<chain_id>")
+    def api_chain_update(chain_id: str):
+        from .db.activity_chains_repo import save_chain_from_api
+
+        data = request.get_json(force=True) or {}
+        if not (data.get("logs") or data.get("steps")):
+            return jsonify({"error": "logs requeridos"}), 400
+        try:
+            chain = save_chain_from_api(chain_id, data)
+        except (ValueError, TypeError) as exc:
+            return jsonify({"error": str(exc)}), 400
+        return jsonify({"ok": True, "chain": chain.to_payload()})
+
+    @app.post("/api/chains")
+    def api_chain_create():
+        from .db.activity_chains_repo import load_chain, save_chain_from_api
+
+        data = request.get_json(force=True) or {}
+        chain_id = str(data.get("id", "")).strip()
+        if not chain_id:
+            return jsonify({"error": "id requerido"}), 400
+        if load_chain(chain_id):
+            return jsonify({"error": f"La cadena {chain_id!r} ya existe"}), 409
+        try:
+            chain = save_chain_from_api(chain_id, data)
+        except (ValueError, TypeError) as exc:
+            return jsonify({"error": str(exc)}), 400
+        return jsonify({"ok": True, "chain": chain.to_payload()})
+
     @app.get("/api/events")
     def api_events():
         templates = _current_templates()
         catalog = build_event_catalog(templates)
+        fmt = request.args.get("format", "").strip().lower()
+        source = request.args.get("source", "").strip().lower()
+        category = request.args.get("category", "").strip().lower()
+        if fmt or source or category:
+            catalog = [
+                c for c in catalog
+                if (not fmt or c.get("format", "").lower() == fmt)
+                and (not source or c.get("system", "").lower() == source)
+                and (not category or c.get("category", "").lower() == category)
+            ]
         return jsonify({
-            "ids": sorted(templates.keys()),
-            "count": len(templates),
+            "ids": sorted(c["id"] for c in catalog),
+            "count": len(catalog),
             "catalog": catalog,
             "by_tactic": index_events_by_tactic(catalog),
+            "fortigate_placeholders": FORTIGATE_PLACEHOLDERS,
         })
 
     @app.get("/api/mitre/tactics")

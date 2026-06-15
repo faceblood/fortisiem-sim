@@ -40,10 +40,14 @@ def test_seed_loads_events_and_scenarios(sql_db):
 
 def test_assets_roundtrip(sql_db):
     assets = load_assets_data()
-    assets["ad"]["users"].append("test.user")
+    assets["ad"]["users"].append({"username": "test.user", "email": "test.user@age.local"})
     save_assets_data(assets)
     reloaded = load_assets_data()
-    assert "test.user" in reloaded["ad"]["users"]
+    usernames = {
+        u["username"] if isinstance(u, dict) else str(u)
+        for u in reloaded["ad"]["users"]
+    }
+    assert "test.user" in usernames
 
 
 def test_import_event_sql(sql_db):

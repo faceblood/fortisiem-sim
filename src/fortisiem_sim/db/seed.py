@@ -13,6 +13,7 @@ from .assets_repo import seed_assets_from_yaml
 from .connection import get_connection, init_schema
 from .email_repo import seed_email_templates
 from .events_repo import upsert_event_raw, upsert_template
+from .import_activity_chains import import_activity_chains
 from .scenarios_repo import seed_scenarios_from_yaml
 
 
@@ -65,3 +66,4 @@ def seed_database(conn: sqlite3.Connection | None = None) -> None:
     finally:
         if own:
             conn.close()
+    import_activity_chains()

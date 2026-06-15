@@ -188,6 +188,8 @@ def get_connection(path: Path | None = None) -> sqlite3.Connection:
 
 def init_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
+    from .migrations import apply_migrations
+    apply_migrations(conn)
     cols = {r[1] for r in conn.execute("PRAGMA table_info(scenario_phases)")}
     if "phase_type" not in cols:
         conn.execute("ALTER TABLE scenario_phases ADD COLUMN phase_type TEXT NOT NULL DEFAULT 'mitre'")
@@ -199,7 +201,7 @@ def database_is_empty(conn: sqlite3.Connection) -> bool:
     return int(row["n"]) == 0
 
 
-def ensure_database(seed_from_yaml: bool = True, path: Path | None = None) -> Path:
+def ensure_database(seed_from_yaml: bool = False, path: Path | None = None) -> Path:
     """Crea schema y opcionalmente importa YAML si la BD está vacía."""
     from .email_repo import seed_email_templates
     from .seed import seed_database

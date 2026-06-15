@@ -83,8 +83,8 @@ def build_parser() -> argparse.ArgumentParser:
     db_p = db.add_parser("db", help="Base SQLite local (config/fortisiem.db)")
     db_p.add_argument(
         "action",
-        choices=["init", "seed", "status"],
-        help="init=crear schema; seed=importar YAML; status=resumen",
+        choices=["init", "migrate", "import-csv", "import-linux-catalog", "import-activity-chains", "seed", "status"],
+        help="init=schema; migrate=v2; import-csv=CSV→SQL; import-linux-catalog=YAML catálogo Linux; import-activity-chains=YAML cadenas; seed=YAML; status=resumen",
     )
     return p
 
@@ -133,8 +133,72 @@ def _resolve_config(args: argparse.Namespace) -> str | None:
     return resolve_scenario(raw).stem
 
 
+
+def _table(conn, name: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
+    ).fetchone()
+    return row is not None
+
+
+def _run_send_vpn(argv: list[str]) -> int:
+    import argparse
+
+    from .engine import print_summary
+    from .loaders import default_lab_path, load_lab_profile, merge_lab_into_options
+    from .models import SendOptions
+    from .storage import enable_sql_storage, use_sql_storage
+    from .vpn import run_vpn_sender
+
+    p = argparse.ArgumentParser(prog="fortisiem-sim send-vpn", description="Envía logs FortiGate VPN desde SQLite")
+    p.add_argument("--count", type=int, default=120)
+    p.add_argument("--rate", type=float, default=5.0)
+    p.add_argument("--remote-access-ip", default="", help="IP remota del cliente VPN (remip)")
+    p.add_argument("--vpn-gateway-ip", default="", help="IP pública del gateway VPN")
+    p.add_argument("--vpn-assigned-ip", default="", help="IP asignada al túnel")
+    p.add_argument("--event-hint", default="", help="Filtrar plantilla por id/nombre")
+    p.add_argument("--target", default="10.255.9.3")
+    p.add_argument("--port", type=int, default=514)
+    p.add_argument("--dry-run", dest="dry_run", action="store_true", default=True)
+    p.add_argument("--send", dest="dry_run", action="store_false")
+    p.add_argument("--no-spoof", action="store_true")
+    p.add_argument("--iface", default="")
+    p.add_argument("-q", "--quiet", action="store_true")
+    args = p.parse_args(argv)
+
+    if not use_sql_storage():
+        enable_sql_storage(seed_from_yaml=False)
+    options = SendOptions(
+        target=args.target,
+        port=args.port,
+        dry_run=args.dry_run,
+        spoof_src=not args.no_spoof,
+        iface=args.iface,
+        quiet=args.quiet,
+    )
+    merge_lab_into_options(options, load_lab_profile(default_lab_path()))
+    try:
+        summary = run_vpn_sender(
+            options,
+            count=args.count,
+            rate=args.rate,
+            remote_access_ip=args.remote_access_ip,
+            vpn_gateway_ip=args.vpn_gateway_ip,
+            vpn_assigned_ip=args.vpn_assigned_ip,
+            event_hint=args.event_hint,
+        )
+    except RuntimeError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    if not args.quiet:
+        print_summary(summary, dry_run=options.dry_run)
+    return 0
+
+
 def _run_db_command(action: str) -> int:
     from .db.connection import db_path, get_connection, init_schema
+    from .db.import_csv import import_all_csv
+    from .db.migrations import apply_migrations
     from .storage import enable_sql_storage
 
     path = db_path()
@@ -144,45 +208,109 @@ def _run_db_command(action: str) -> int:
         conn.close()
         print(f"SQLite inicializada: {path}")
         return 0
+    if action == "migrate":
+        conn = get_connection(path)
+        init_schema(conn)
+        applied = apply_migrations(conn)
+        conn.close()
+        print(f"Migraciones aplicadas: {applied or ['ninguna pendiente']}")
+        return 0
+    if action == "import-csv":
+        conn = get_connection(path)
+        init_schema(conn)
+        conn.close()
+        result = import_all_csv()
+        print(f"Import CSV completado → {path}")
+        import json
+        print(json.dumps(result, indent=2))
+        return 0
+    if action == "import-linux-catalog":
+        from .db.import_linux_catalog import default_catalog_path, import_linux_catalog_yaml
+
+        catalog = default_catalog_path()
+        if not catalog.exists():
+            print(f"No se encontró catálogo Linux: {catalog}", file=sys.stderr)
+            return 1
+        result = import_linux_catalog_yaml(catalog, db_path=path)
+        import json
+
+        print(f"Catálogo Linux importado desde {catalog} → {path}")
+        print(json.dumps({k: v for k, v in result.items() if k != "ids"}, indent=2))
+        return 0
+    if action == "import-activity-chains":
+        from .db.import_activity_chains import import_activity_chains
+
+        result = import_activity_chains(db_path=path)
+        import json
+
+        print(f"Cadenas de actividad importadas → {path}")
+        print(json.dumps({k: v for k, v in result.items() if k != "ids"}, indent=2))
+        return 0
     if action == "seed":
         enable_sql_storage(seed_from_yaml=True)
         print(f"Seed completado en {path}")
         return 0
     if action == "status":
         if not path.exists():
-            print(f"SQLite no existe: {path}\n  Ejecuta: fortisiem-sim db init && fortisiem-sim db seed")
+            print(
+                f"SQLite no existe: {path}\n"
+                "  Ejecuta: fortisiem-sim db init && fortisiem-sim db import-csv"
+            )
             return 1
         conn = get_connection(path)
         try:
             events = conn.execute("SELECT COUNT(*) AS n FROM event_templates").fetchone()["n"]
             scenarios = conn.execute("SELECT COUNT(*) AS n FROM scenarios").fetchone()["n"]
+            assets = conn.execute("SELECT COUNT(*) AS n FROM lab_assets").fetchone()["n"] if _table(conn, "lab_assets") else 0
+            users = conn.execute("SELECT COUNT(*) AS n FROM ad_users").fetchone()["n"]
+            vpn = conn.execute(
+                "SELECT COUNT(*) AS n FROM event_templates WHERE source_system='fortigate' AND category='vpn'"
+            ).fetchone()["n"]
         finally:
             conn.close()
         print(f"SQLite: {path}")
-        print(f"  Eventos:    {events}")
-        print(f"  Escenarios: {scenarios}")
+        print(f"  Eventos:       {events}")
+        print(f"  VPN templates: {vpn}")
+        print(f"  Escenarios:    {scenarios}")
+        print(f"  lab_assets:    {assets}")
+        print(f"  ad_users:      {users}")
         return 0
     return 1
 
 
 def main(argv: list[str] | None = None) -> int:
+    import sys
+    raw = argv if argv is not None else sys.argv[1:]
+    if raw and raw[0] == "db":
+        if len(raw) < 2:
+            print("Uso: fortisiem-sim db {init|migrate|import-csv|import-linux-catalog|import-activity-chains|seed|status}", file=sys.stderr)
+            return 2
+        return _run_db_command(raw[1])
+    if raw and raw[0] == "send-vpn":
+        return _run_send_vpn(raw[1:])
+
     args = build_parser().parse_args(argv)
 
     if args.command == "db":
         return _run_db_command(args.action)
 
     options = _build_options(args)
-    templates_path = resolve_templates_path(options)
+    from .storage import load_all_event_templates, use_sql_storage
 
-    if not templates_path.exists():
-        print(f"ERROR: plantillas no encontradas: {templates_path}", file=sys.stderr)
-        return 1
-    templates = load_templates_merged(templates_path)
+    if use_sql_storage():
+        templates = load_all_event_templates()
+        templates_path = None
+    else:
+        templates_path = resolve_templates_path(options)
+        if not templates_path.exists():
+            print(f"ERROR: plantillas no encontradas: {templates_path}", file=sys.stderr)
+            return 1
+        templates = load_templates_merged(templates_path)
 
     if args.web:
         from .web import serve
 
-        serve(host=args.web_host, port=args.web_port, templates_path=templates_path)
+        serve(host=args.web_host, port=args.web_port, templates_path=templates_path or resolve_templates_path(options))
         return 0
 
     if args.list_scenarios:
@@ -254,7 +382,7 @@ def main(argv: list[str] | None = None) -> int:
             for err in errors:
                 print(f"  - {err}")
             return 1
-        print(f"OK: {config_id} + {templates_path.name}")
+        print(f"OK: {config_id} + {'SQLite' if use_sql_storage() else templates_path.name}")
         return 0
 
     if args.probe:

@@ -62,6 +62,7 @@ def _default_c2() -> dict[str, Any]:
         "default_ip": DEFAULT_C2_IP,
         "default_uri": DEFAULT_C2_URI,
         "ips": [DEFAULT_C2_IP, "203.0.113.66"],
+        "domains": ["cdn-update-security.example"],
         "uris": [
             DEFAULT_C2_URI,
             "https://malware-c2.example.com/gate",
@@ -74,6 +75,7 @@ def normalize_c2(raw: dict[str, Any] | None) -> dict[str, Any]:
     data = raw or {}
     ips = [str(x).strip() for x in data.get("ips", base["ips"]) if str(x).strip()]
     uris = [str(x).strip() for x in data.get("uris", base["uris"]) if str(x).strip()]
+    domains = [str(x).strip() for x in data.get("domains", data.get("uris", [])) if str(x).strip()]
     default_ip = str(data.get("default_ip", base["default_ip"])).strip() or DEFAULT_C2_IP
     default_uri = str(data.get("default_uri", base["default_uri"])).strip() or DEFAULT_C2_URI
     if default_ip not in ips:
@@ -85,6 +87,7 @@ def normalize_c2(raw: dict[str, Any] | None) -> dict[str, Any]:
         "default_uri": default_uri,
         "ips": ips,
         "uris": uris,
+        "domains": domains or uris,
     }
 
 

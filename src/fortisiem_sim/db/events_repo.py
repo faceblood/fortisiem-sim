@@ -18,7 +18,15 @@ from ..loaders import (
 )
 from ..mitre import EVENT_MITRE
 from ..models import EventTemplate
+import re
 from .connection import db_path, get_connection
+
+
+def _body_for_sim(body: str) -> str:
+    if "{{" in body:
+        return body
+    return re.sub(r"\{(\w+)\}", r"{{\1}}", body)
+
 
 
 def _json_loads(raw: str, default: Any) -> Any:
@@ -40,13 +48,17 @@ def _template_from_row(row: sqlite3.Row, mitre: dict[str, list[str]] | None = No
         severity=row["severity"],
         category=row["category"],
         source_system=row["source_system"],
-        body=row["body"],
+        body=_body_for_sim(row["body"]),
         syslog_hostname=row["syslog_hostname"],
         pri=int(row["pri"]),
         fields=_json_loads(row["fields_json"], []),
         defaults=_json_loads(row["defaults_json"], {}),
         fortisiem_hints=_json_loads(row["fortisiem_hints_json"], {}),
         tags=_json_loads(row["tags_json"], []),
+        action=str(row["action"] if "action" in row.keys() else ""),
+        ttp=str(row["ttp"] if "ttp" in row.keys() else ""),
+        weight=int(row["weight"] if "weight" in row.keys() else 5),
+        event_group=str(row["event_group"] if "event_group" in row.keys() else ""),
         mitre=flat,
         mitre_tactics=tactics,
         mitre_techniques=techniques,
@@ -105,7 +117,14 @@ def upsert_event_raw(
     *,
     is_builtin: bool = False,
 ) -> None:
+    from ..mitre import mitre_from_ttp_slug
+
     tactics, techniques, _ = _parse_mitre_fields(raw)
+    ttp = str(raw.get("ttp", "") or "").strip()
+    if ttp and not tactics and not techniques:
+        mapped = mitre_from_ttp_slug(ttp)
+        tactics = mapped.get("tactics", [])
+        techniques = mapped.get("techniques", [])
     if not tactics and not techniques:
         meta = EVENT_MITRE.get(event_id, {})
         tactics = meta.get("tactics", [])
@@ -115,14 +134,17 @@ def upsert_event_raw(
         INSERT INTO event_templates (
             id, name, format, severity, category, source_system, body,
             syslog_hostname, pri, fields_json, defaults_json,
-            fortisiem_hints_json, tags_json, is_builtin, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            fortisiem_hints_json, tags_json, action, weight, event_group, ttp,
+            is_builtin, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
         ON CONFLICT(id) DO UPDATE SET
             name=excluded.name, format=excluded.format, severity=excluded.severity,
             category=excluded.category, source_system=excluded.source_system, body=excluded.body,
             syslog_hostname=excluded.syslog_hostname, pri=excluded.pri,
             fields_json=excluded.fields_json, defaults_json=excluded.defaults_json,
             fortisiem_hints_json=excluded.fortisiem_hints_json, tags_json=excluded.tags_json,
+            action=excluded.action, weight=excluded.weight,
+            event_group=excluded.event_group, ttp=excluded.ttp,
             is_builtin=CASE WHEN event_templates.is_builtin = 1 THEN 1 ELSE excluded.is_builtin END,
             updated_at=datetime('now')
         """,
@@ -140,10 +162,133 @@ def upsert_event_raw(
             json.dumps({str(k): str(v) for k, v in (raw.get("defaults") or {}).items()}),
             json.dumps({str(k): str(v) for k, v in (raw.get("fortisiem_hints") or {}).items()}),
             json.dumps([str(x) for x in (raw.get("tags") or [])]),
+            str(raw.get("action", "")),
+            int(raw.get("weight", 5)),
+            str(raw.get("event_group", "")),
+            ttp,
             1 if is_builtin else 0,
         ),
     )
     _upsert_mitre(conn, event_id, tactics, techniques)
+
+
+def _tactic_labels(tactics: list[str]) -> list[dict[str, str]]:
+    from ..mitre import tactic_by_id
+
+    out: list[dict[str, str]] = []
+    for tid in tactics:
+        t = tactic_by_id(tid)
+        out.append({
+            "id": tid,
+            "name": t["name"] if t else tid,
+            "slug": t["slug"] if t else "",
+        })
+    return out
+
+
+def event_to_detail(tmpl: EventTemplate, *, is_builtin: bool = False, updated_at: str = "") -> dict[str, Any]:
+    from ..mitre import event_mitre_meta, event_system_label
+
+    meta = event_mitre_meta(tmpl.id, tmpl)
+    tactics = meta.get("tactics", [])
+    techniques = meta.get("techniques", [])
+    return {
+        "id": tmpl.id,
+        "name": tmpl.name,
+        "format": tmpl.format,
+        "system": event_system_label(tmpl),
+        "source_system": tmpl.source_system,
+        "category": tmpl.category,
+        "action": tmpl.action,
+        "severity": tmpl.severity,
+        "weight": tmpl.weight,
+        "event_group": tmpl.event_group,
+        "ttp": tmpl.ttp,
+        "body": tmpl.body,
+        "syslog_hostname": tmpl.syslog_hostname,
+        "pri": tmpl.pri,
+        "fields": tmpl.fields,
+        "defaults": tmpl.defaults,
+        "fortisiem_hints": tmpl.fortisiem_hints,
+        "tags": tmpl.tags,
+        "tactics": tactics,
+        "techniques": techniques,
+        "tactic_labels": _tactic_labels(tactics),
+        "is_builtin": bool(is_builtin),
+        "updated_at": updated_at,
+    }
+
+
+def load_event_detail(event_id: str, conn: sqlite3.Connection | None = None) -> dict[str, Any] | None:
+    own = conn is None
+    if own:
+        conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT * FROM event_templates WHERE id = ?", (event_id,)
+        ).fetchone()
+        if not row:
+            return None
+        mitre_map = _load_mitre_map(conn)
+        meta = mitre_map.get(event_id, {"tactics": [], "techniques": []})
+        if not meta["tactics"] and not meta["techniques"]:
+            meta = EVENT_MITRE.get(event_id, meta)
+        tmpl = _template_from_row(row, meta)
+        return event_to_detail(
+            tmpl,
+            is_builtin=bool(row["is_builtin"]),
+            updated_at=str(row["updated_at"] or ""),
+        )
+    finally:
+        if own:
+            conn.close()
+
+
+def save_event_from_api(event_id: str, data: dict[str, Any]) -> None:
+    tactics = [str(x).strip().upper() for x in (data.get("tactics") or []) if str(x).strip()]
+    techniques = [str(x).strip() for x in (data.get("techniques") or []) if str(x).strip()]
+    raw: dict[str, Any] = {
+        "name": data.get("name", event_id),
+        "format": data.get("format", "syslog_generic"),
+        "severity": data.get("severity", "info"),
+        "category": data.get("category", "generic"),
+        "source_system": data.get("source_system", data.get("system", "")),
+        "body": data.get("body", ""),
+        "syslog_hostname": data.get("syslog_hostname", "lab-host"),
+        "pri": int(data.get("pri", 134)),
+        "fields": data.get("fields") or [],
+        "defaults": data.get("defaults") or {},
+        "fortisiem_hints": data.get("fortisiem_hints") or {},
+        "tags": data.get("tags") or [],
+        "action": data.get("action", ""),
+        "weight": int(data.get("weight", 5)),
+        "event_group": data.get("event_group", ""),
+        "ttp": data.get("ttp", ""),
+        "mitre": {"tactics": tactics, "techniques": techniques},
+    }
+    conn = get_connection()
+    try:
+        upsert_event_raw(conn, event_id, raw, is_builtin=False)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def delete_event(event_id: str) -> bool:
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT is_builtin FROM event_templates WHERE id = ?", (event_id,)
+        ).fetchone()
+        if not row:
+            return False
+        if int(row["is_builtin"]):
+            raise ValueError("No se puede eliminar un evento builtin")
+        conn.execute("DELETE FROM event_templates WHERE id = ?", (event_id,))
+        conn.commit()
+        return True
+    finally:
+        conn.close()
 
 
 def upsert_template(conn: sqlite3.Connection, tmpl: EventTemplate, *, is_builtin: bool = False) -> None:

@@ -61,9 +61,58 @@ textarea { min-height: 60px; resize: vertical; }
 .scenario-item .si-title { font-weight: 600; font-size: 13px; }
 .scenario-item .si-meta { font-size: 11px; color: var(--muted); margin-top: 4px; }
 .sc-preview { margin-top: 12px; padding: 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); font-size: 12px; }
-.catalog-table .pill { margin: 1px 2px; font-size: 10px; }
+.catalog-table tr.catalog-ev-row { cursor: pointer; }
+.catalog-table tr.catalog-ev-row:hover { background: #1f6feb18; }
+.catalog-table .catalog-add-ev { white-space: nowrap; }
 .catalog-table .pill-system { background: #1a3a52; color: #8ec8ff; border-color: #2a5a7a; }
 .pill-email, .phase-email .mitre-badge { background: #3a2a52; color: #d8b4fe; border-color: #5a3a7a; }
+.pill-chain, .phase-chain .mitre-badge { background: #1a2f3d; color: #7dd3fc; border-color: #1e4a6f; }
+.phase-chain .chains-wrap { margin-top: 8px; }
+.chain-phase-row { display: grid; grid-template-columns: 1fr auto auto; gap: 8px; align-items: end; margin-bottom: 6px; }
+.events-layout { display: grid; grid-template-columns: minmax(300px, 380px) 1fr; gap: 16px; align-items: start; }
+.activity-layout { display: grid; grid-template-columns: minmax(300px, 380px) 1fr; gap: 16px; align-items: start; }
+@media (max-width: 960px) { .events-layout, .activity-layout { grid-template-columns: 1fr; } }
+.legit-badge { font-size: 11px; padding: 2px 8px; border-radius: 999px; background: #1a3d2e; color: #8feca8; }
+.illegit-badge { font-size: 11px; padding: 2px 8px; border-radius: 999px; background: #3d1a1a; color: #eca08f; }
+.chain-steps { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.chain-step-row { font-family: var(--mono, monospace); font-size: 12px; padding: 8px; background: #111827; border-radius: 6px; border: 1px solid #1f2937; }
+.chain-row { display: grid; grid-template-columns: 1fr auto auto; gap: 8px; align-items: end; margin-bottom: 6px; padding: 8px; background: #0f172a; border-radius: 6px; border: 1px solid #1e3a5f; }
+.chain-row-inline {
+  border: 1px dashed #1e4a6f;
+  background: rgba(30, 74, 111, 0.15);
+  margin-bottom: 8px;
+}
+.chain-row-inline .chain-step-tag { grid-column: 1 / -1; }
+.chain-step-tag {
+  font-size: 11px;
+  color: #7dd3fc;
+  margin-bottom: 4px;
+}
+.step-add-label { font-size: 12px; color: var(--muted); align-self: center; white-space: nowrap; }
+.phase-step-actions .ph-add-step-kind { min-width: 220px; }
+.mixed-badge { font-size: 11px; padding: 2px 8px; border-radius: 999px; background: #3d3a1a; color: #ecda8f; }
+.chain-log-edit { border: 1px solid #1f2937; border-radius: 8px; padding: 10px; margin-bottom: 8px; background: #0b1220; }
+.chain-log-edit .row { margin-bottom: 6px; }
+.act-group-title { font-size: 12px; font-weight: 600; color: #94a3b8; margin: 12px 0 6px; text-transform: uppercase; letter-spacing: 0.04em; }
+.events-list-pane { max-height: calc(100vh - 100px); overflow: auto; position: sticky; top: 8px; }
+.events-list { margin-top: 10px; display: flex; flex-direction: column; gap: 4px; max-height: 55vh; overflow: auto; }
+.event-list-item {
+  text-align: left; padding: 8px 10px; border-radius: 6px; border: 1px solid var(--border);
+  background: var(--bg); color: var(--fg); cursor: pointer; width: 100%;
+}
+.event-list-item:hover { border-color: var(--accent); }
+.event-list-item.active { border-color: var(--accent); background: #1f6feb18; }
+.event-list-item .eli-id { font-family: ui-monospace, Menlo, monospace; font-size: 11px; color: var(--accent); }
+.event-list-item .eli-name { font-size: 13px; font-weight: 600; margin-top: 2px; }
+.event-list-item .eli-meta { font-size: 11px; color: var(--muted); margin-top: 4px; }
+.tactics-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 6px; margin: 10px 0; }
+.tactic-check { display: flex; align-items: flex-start; gap: 8px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); font-size: 12px; }
+.tactic-check input { width: auto; margin-top: 2px; }
+.tactic-check .tc-id { color: var(--purple); font-weight: 600; }
+.mitre-preview { margin-top: 8px; padding: 8px; border-radius: 6px; background: var(--bg); border: 1px solid var(--border); font-size: 12px; }
+textarea.mono, input.mono { font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
+.pill-legit { background: #1a3d2a; color: #6ee7a0; border-color: #2d6a4f; }
+.pill-illegit { background: #3d1a1a; color: #fca5a5; border-color: #7a2a2a; }
 .line-email { color: #a78bfa; margin: 4px 0; font-size: 12px; }
 .phase-step-actions { gap: 8px; margin-top: 6px; }
 .email-row-inline {

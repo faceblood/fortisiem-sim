@@ -34,6 +34,10 @@ class EventTemplate:
     fortisiem_hints: dict[str, str] = field(default_factory=dict)
     defaults: dict[str, str] = field(default_factory=dict)
     tags: list[str] = field(default_factory=list)
+    action: str = ""
+    ttp: str = ""
+    weight: int = 5
+    event_group: str = ""
 
 
 @dataclass
@@ -76,6 +80,7 @@ class ScenarioEvent:
     actor: str = ""
     overrides: dict[str, str] = field(default_factory=dict)
     sort_order: int = 0
+    chain_id: str = ""
 
 
 @dataclass

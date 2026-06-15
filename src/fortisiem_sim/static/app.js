@@ -1,4 +1,4 @@
-/* FortiSIEM Sim — GUI: Ejecutar · Config · Escenario */
+/* FortiSIEM Sim — GUI: Ejecutar · Config · Eventos · Escenario */
 
 const $ = (id) => document.getElementById(id);
 
@@ -34,6 +34,8 @@ document.querySelectorAll("nav.tabs button").forEach((btn) => {
     btn.classList.add("active");
     $(`panel-${btn.dataset.tab}`).classList.add("active");
     if (btn.dataset.tab === "config" && !state.configLoaded) loadConfig();
+    if (btn.dataset.tab === "events" && !state.eventsReady) initEventsTab();
+    if (btn.dataset.tab === "activity" && !state.activityReady) initActivityTab();
     if (btn.dataset.tab === "scenario" && !state.scenarioReady) initScenarioTab();
   });
 });
@@ -49,6 +51,13 @@ const state = {
   expectedTotal: 0,
   eventCatalog: [],
   eventsByTactic: {},
+  eventsReady: false,
+  eventsSelectedId: "",
+  activityReady: false,
+  activityChains: [],
+  activitySelectedId: "",
+  activityIsNew: false,
+  mitreTactics: [],
   emailCatalog: [],
   runPhaseNames: [],
   runPhasesMeta: [],
@@ -318,8 +327,10 @@ $("run-phase").addEventListener("change", resetPhaseSequence);
 function renderUserChips(users) {
   $("cfg-users").innerHTML = users
     .map(
-      (u, i) =>
-        `<span class="chip">${esc(u)}<button type="button" data-i="${i}" class="rm-user" title="Quitar">×</button></span>`
+      (u, i) => {
+        const label = typeof u === "object" ? `${esc(u.username || u.samaccountname || "")} · ${esc(u.email || "")}` : esc(u);
+        return `<span class="chip">${label}<button type="button" data-i="${i}" class="rm-user" title="Quitar">×</button></span>`;
+      }
     )
     .join("");
   $("cfg-users").querySelectorAll(".rm-user").forEach((btn) => {
@@ -375,6 +386,7 @@ function fillConfigUI(data) {
   $("cfg-c2-default-ip").value = c2.default_ip || "";
   $("cfg-c2-default-uri").value = c2.default_uri || "";
   $("cfg-c2-ips").value = arrToLines(c2.ips);
+  $("cfg-c2-domains").value = arrToLines(c2.domains || c2.uris);
   $("cfg-c2-uris").value = arrToLines(c2.uris);
   const smtp = data.smtp || {};
   $("cfg-smtp-enabled").checked = !!smtp.enabled;
@@ -405,8 +417,15 @@ function fillConfigUI(data) {
 
 async function loadConfig() {
   try {
+    const storage = await api("/api/storage");
+    $("storage-badge").textContent = (storage.backend || "yaml").toUpperCase();
     const data = await api("/api/config");
     fillConfigUI(data);
+    const st = data.stats || {};
+    if (st.event_templates) {
+      $("sql-stats").textContent = `${st.event_templates} evt · ${st.vpn_templates || 0} VPN · ${st.malware_samples || 0} malware`;
+    }
+    state.configLoaded = true;
   } catch (e) {
     banner($("config-banner"), "live", "Error cargando config: " + e.message);
   }
@@ -415,7 +434,10 @@ async function loadConfig() {
 function collectConfig() {
   const users = [];
   $("cfg-users").querySelectorAll(".chip").forEach((c) => {
-    users.push(c.textContent.replace("×", "").trim());
+    const t = c.textContent.replace("×", "").trim();
+    const parts = t.split(" · ");
+    if (parts.length >= 2) users.push({ username: parts[0], email: parts.slice(1).join(" · ") });
+    else users.push({ username: t, email: `${t}@age.local` });
   });
   return {
     ad: {
@@ -430,6 +452,7 @@ function collectConfig() {
       default_ip: $("cfg-c2-default-ip").value.trim() || "203.0.113.50",
       default_uri: $("cfg-c2-default-uri").value.trim() || "https://lab-c2.example/beacon",
       ips: linesToArr($("cfg-c2-ips")),
+      domains: linesToArr($("cfg-c2-domains")),
       uris: linesToArr($("cfg-c2-uris")),
     },
     pools: {
@@ -454,10 +477,15 @@ $("btn-add-user").addEventListener("click", () => {
   const v = $("cfg-user-new").value.trim();
   if (!v) return;
   const users = [];
-  $("cfg-users").querySelectorAll(".chip").forEach((c) =>
-    users.push(c.textContent.replace("×", "").trim())
-  );
-  if (!users.includes(v)) users.push(v);
+  $("cfg-users").querySelectorAll(".chip").forEach((c) => {
+    const t = c.textContent.replace("×", "").trim();
+    const parts = t.split(" · ");
+    if (parts.length >= 2) users.push({ username: parts[0], email: parts.slice(1).join(" · ") });
+    else users.push({ username: t, email: `${t}@age.local` });
+  });
+  const emailGuess = v.includes("@") ? v : `${v}@age.local`;
+  const username = v.includes("@") ? v.split("@")[0] : v;
+  if (!users.some((u) => u.username === username)) users.push({ username, email: emailGuess });
   renderUserChips(users);
   $("cfg-user-new").value = "";
 });
@@ -516,6 +544,7 @@ $("btn-c2-import").addEventListener("click", async () => {
 
 /* ========== ESCENARIO BUILDER ========== */
 let scPhases = [];
+let scenarioCatalogView = null;
 let scMode = "new";
 let scItems = [];
 let scLoadedId = null;
@@ -532,9 +561,11 @@ function mitreOptions(selected) {
 
 function normalizeScenarioEvent(ev) {
   return {
-    id: ev.id,
+    id: ev.id || "",
+    chain_id: ev.chain_id || "",
     count: ev.count ?? 1,
     actor: ev.actor || "",
+    sort_order: ev.sort_order,
   };
 }
 
@@ -552,7 +583,7 @@ const _PHASE_SLUG_ALIASES = {
 };
 
 function syncPhaseWithMitre(ph) {
-  if (ph.phase_type === "email") return ph;
+  if (ph.phase_type === "email" || ph.phase_type === "chain") return ph;
   let tid = ph.mitre_tactic || "";
   if (!tid && ph.name) {
     const bySlug = mitreTactics.find((t) => t.slug === ph.name);
@@ -624,11 +655,19 @@ function phaseFromTactic(tacticId, withEvents) {
 function mitrePhaseSteps(ph) {
   const steps = [];
   (ph.events || []).forEach((ev, i) => {
-    steps.push({
-      type: "event",
-      sort_order: ev.sort_order ?? i,
-      data: normalizeScenarioEvent(ev),
-    });
+    if (ev.chain_id) {
+      steps.push({
+        type: "chain",
+        sort_order: ev.sort_order ?? i,
+        data: normalizeScenarioEvent(ev),
+      });
+    } else {
+      steps.push({
+        type: "event",
+        sort_order: ev.sort_order ?? i,
+        data: normalizeScenarioEvent(ev),
+      });
+    }
   });
   (ph.emails || []).forEach((em, i) => {
     steps.push({
@@ -652,6 +691,34 @@ function setScenarioMode(mode) {
     renderScenarioPreview(null);
     document.querySelectorAll(".scenario-item").forEach((el) => el.classList.remove("active"));
   }
+}
+
+function scenarioStepCount(phases) {
+  let n = 0;
+  (phases || []).forEach((ph) => {
+    if (ph.phase_type === "email") {
+      n += (ph.emails || []).length;
+      return;
+    }
+    if (ph.phase_type === "chain") {
+      (ph.chains || ph.events || []).forEach((ch) => {
+        const cid = ch.chain_id || "";
+        const chain = state.activityChains.find((c) => c.id === cid);
+        n += chain?.step_count || 1;
+      });
+      return;
+    }
+    (ph.events || []).forEach((ev) => {
+      if (ev.chain_id) {
+        const chain = state.activityChains.find((c) => c.id === ev.chain_id);
+        n += chain?.step_count || 1;
+      } else {
+        n += +ev.count || 1;
+      }
+    });
+    n += (ph.emails || []).length;
+  });
+  return n;
 }
 
 function renderScenarioPreview(item) {
@@ -730,23 +797,56 @@ function firstAllowedEventId(tacticId) {
   return ids[0] || "";
 }
 
-function eventOptions(selected, tacticId) {
-  const ids = tacticId ? allowedEventIds(tacticId) : [];
+function phaseEventOptionIds(tacticId, selected, extraIds = []) {
+  const ids = new Set(allowedEventIds(tacticId));
+  (extraIds || []).forEach((id) => {
+    if (id) ids.add(id);
+  });
+  if (selected) ids.add(selected);
+  return [...ids];
+}
+
+function eventOptions(selected, tacticId, extraIds) {
+  return eventOptionsGrouped(selected, tacticId, extraIds);
+}
+
+function eventOptionsGrouped(selected, tacticId, extraIds = []) {
   if (!tacticId) {
     return `<option value="">— elige táctica MITRE primero —</option>`;
   }
+  const allowed = new Set(allowedEventIds(tacticId));
+  const ids = phaseEventOptionIds(tacticId, selected, extraIds);
   if (!ids.length) {
     return `<option value="">— sin eventos para ${esc(tacticId)} —</option>`;
   }
-  return ids
-    .map((id) => {
-      const entry = getCatalogEntry(id);
-      const sys = entry?.system ? `${entry.system} · ` : "";
-      const ttp = entry ? entry.techniques.join(", ") : "";
-      const label = ttp ? `${sys}${id} (${ttp})` : sys ? `${sys}${id}` : id;
-      return `<option value="${esc(id)}"${id === selected ? " selected" : ""}>${esc(label)}</option>`;
+  const groups = {};
+  const catalogOnly = [];
+  ids.forEach((id) => {
+    if (!allowed.has(id)) {
+      catalogOnly.push(id);
+      return;
+    }
+    const entry = getCatalogEntry(id);
+    const key = entry ? `${entry.system || "other"}/${entry.category || "generic"}` : "other";
+    (groups[key] = groups[key] || []).push(id);
+  });
+  const renderOpt = (id) => {
+    const entry = getCatalogEntry(id);
+    const fmt = entry?.format === "fortigate" ? "FG" : entry?.system?.slice(0, 3)?.toUpperCase() || "";
+    const label = entry ? `${fmt} · ${entry.name} (${id})` : id;
+    return `<option value="${esc(id)}"${id === selected ? " selected" : ""}>${esc(label)}</option>`;
+  };
+  let html = Object.keys(groups)
+    .sort()
+    .map((key) => {
+      const opts = groups[key].map(renderOpt).join("");
+      return `<optgroup label="${esc(key)}">${opts}</optgroup>`;
     })
     .join("");
+  if (catalogOnly.length) {
+    html += `<optgroup label="catálogo (otra táctica)">${catalogOnly.map(renderOpt).join("")}</optgroup>`;
+  }
+  return html;
 }
 
 function updatePhaseEventHint(block) {
@@ -767,18 +867,27 @@ function refreshPhaseEventSelects(block) {
   const tid = block.querySelector(".ph-mitre")?.value;
   if (!tid) return;
   const allowed = new Set(allowedEventIds(tid));
+  const rowIds = [...block.querySelectorAll(".steps-wrap > .event-row .ev-id")]
+    .map((s) => s.value)
+    .filter(Boolean);
   block.querySelectorAll(".steps-wrap > .event-row").forEach((row) => {
     const sel = row.querySelector(".ev-id");
     const cur = sel.value;
-    sel.innerHTML = eventOptions(cur, tid);
-    if (tid && cur && !allowed.has(cur)) {
+    sel.innerHTML = eventOptions(cur, tid, rowIds);
+    const willReset = !!(tid && cur && !allowed.has(cur) && !getCatalogEntry(cur));
+    if (willReset) {
       sel.value = firstAllowedEventId(tid);
+    } else if (cur) {
+      sel.value = cur;
     }
     updateEventRowTtp(row, sel.value);
   });
   updatePhaseEventHint(block);
-  const addBtn = block.querySelector(".add-event");
-  if (addBtn) addBtn.disabled = !tid || !allowed.size;
+  const kindSel = block.querySelector(".ph-add-step-kind");
+  const addBtn = block.querySelector(".ph-add-step");
+  const eventOpt = kindSel?.querySelector('option[value="event"]');
+  if (eventOpt) eventOpt.disabled = !tid || !allowed.size;
+  if (addBtn) addBtn.disabled = !tid;
 }
 
 function updateEventRowTtp(row, eventId) {
@@ -786,7 +895,7 @@ function updateEventRowTtp(row, eventId) {
   if (!el) return;
   const entry = getCatalogEntry(eventId);
   el.textContent = entry
-    ? `${entry.system} · ${entry.tactics.join(" · ")} — ${entry.techniques.join(", ")}`
+    ? `${entry.format || entry.system} · ${entry.category || ""} · ${entry.action || ""} · ${entry.tactics.join(" · ")} — ${entry.techniques.join(", ")}`
     : "";
 }
 
@@ -794,31 +903,1078 @@ function applyEventCatalog(events) {
   state.eventIds = events.ids || [];
   state.eventCatalog = events.catalog || [];
   state.eventsByTactic = events.by_tactic || {};
+  state.fortigatePlaceholders = events.fortigate_placeholders || [];
+  scenarioCatalogView = null;
+  const ph = $("fortigate-placeholders-list");
+  if (ph && state.fortigatePlaceholders.length) ph.textContent = state.fortigatePlaceholders.join(", ");
+  fillCatalogCategoryFilter();
   renderEventCatalogTable();
+  fillCatalogTargetPhaseSelect();
   document.querySelectorAll(".phase-block").forEach((block) => refreshPhaseEventSelects(block));
+}
+
+function scenarioCatalogList() {
+  return scenarioCatalogView !== null ? scenarioCatalogView : state.eventCatalog;
+}
+
+function fillCatalogCategoryFilter() {
+  const sel = $("catalog-filter-category");
+  if (!sel) return;
+  const cur = sel.value;
+  const cats = [...new Set((state.eventCatalog || []).map((e) => e.category).filter(Boolean))].sort();
+  sel.innerHTML =
+    '<option value="">Todas</option>' +
+    cats.map((c) => `<option value="${esc(c)}">${esc(c)}</option>`).join("");
+  if (cur && cats.includes(cur)) sel.value = cur;
+}
+
+function fillCatalogTargetPhaseSelect() {
+  const sel = $("catalog-target-phase");
+  if (!sel) return;
+  const cur = sel.value;
+  const options = [];
+  scPhases.forEach((ph, i) => {
+    if (ph.phase_type && ph.phase_type !== "mitre") return;
+    const tactic = ph.mitre_tactic ? getTacticById(ph.mitre_tactic) : null;
+    const label = tactic
+      ? `${tactic.slug} · ${tactic.id}`
+      : ph.name || `fase_${i + 1}`;
+    options.push(`<option value="${i}">${esc(label)}</option>`);
+  });
+  if (!options.length) {
+    sel.innerHTML = '<option value="">— crea una fase MITRE primero —</option>';
+    return;
+  }
+  sel.innerHTML = options.join("");
+  if (cur && scPhases[parseInt(cur, 10)]?.phase_type !== "email" && scPhases[parseInt(cur, 10)]?.phase_type !== "chain") {
+    sel.value = cur;
+  }
+}
+
+function addCatalogEventToPhase(eventId, phaseIndex) {
+  const pi =
+    phaseIndex !== undefined && phaseIndex !== null
+      ? phaseIndex
+      : parseInt($("catalog-target-phase")?.value, 10);
+  if (Number.isNaN(pi) || !scPhases[pi]) {
+    banner($("catalog-banner"), "dry", "Crea y selecciona una fase MITRE destino arriba del catálogo.");
+    return false;
+  }
+  const ph = scPhases[pi];
+  if (ph.phase_type && ph.phase_type !== "mitre") {
+    banner($("catalog-banner"), "dry", "Solo se pueden añadir eventos a fases MITRE.");
+    return false;
+  }
+  const entry = getCatalogEntry(eventId);
+  if (!entry) {
+    banner($("catalog-banner"), "dry", `Evento no encontrado: ${eventId}`);
+    return false;
+  }
+  if (!ph.events) ph.events = [];
+  const order = (ph.events?.length || 0) + (ph.emails?.length || 0);
+  ph.events.push(
+    normalizeScenarioEvent({ id: eventId, count: 1, actor: "", sort_order: order })
+  );
+  renderAllPhases();
+  const tactic = ph.mitre_tactic ? getTacticById(ph.mitre_tactic) : null;
+  const phaseLabel = tactic ? tactic.slug : ph.name || `fase ${pi + 1}`;
+  banner($("catalog-banner"), "ok", `Añadido «${entry.name}» (${eventId}) → ${phaseLabel}`);
+  const block = $("sc-phases")?.querySelector(`.phase-block[data-pi="${pi}"]`);
+  block?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  return true;
+}
+
+function applyScenarioCatalogFilter() {
+  const source = ($("catalog-filter-system")?.value || "").toLowerCase();
+  const category = ($("catalog-filter-category")?.value || "").toLowerCase();
+  if (!source && !category) {
+    scenarioCatalogView = null;
+  } else {
+    scenarioCatalogView = (state.eventCatalog || []).filter((e) => {
+      if (source && (e.system || "").toLowerCase() !== source) return false;
+      if (category && (e.category || "").toLowerCase() !== category) return false;
+      return true;
+    });
+  }
+  renderEventCatalogTable();
+  const n = scenarioCatalogList().length;
+  banner($("catalog-banner"), n ? "ok" : "dry", n ? `${n} evento(s) en vista` : "Ningún evento coincide con el filtro");
+}
+
+function addAllFilteredCatalogEvents() {
+  const list = scenarioCatalogList();
+  if (!list.length) {
+    banner($("catalog-banner"), "dry", "No hay eventos filtrados para añadir.");
+    return;
+  }
+  const pi = parseInt($("catalog-target-phase")?.value, 10);
+  if (Number.isNaN(pi) || !scPhases[pi]) {
+    banner($("catalog-banner"), "dry", "Selecciona una fase MITRE destino.");
+    return;
+  }
+  const ph = scPhases[pi];
+  if (ph.phase_type && ph.phase_type !== "mitre") {
+    banner($("catalog-banner"), "dry", "Solo se pueden añadir eventos a fases MITRE.");
+    return;
+  }
+  if (!ph.events) ph.events = [];
+  let order = (ph.events?.length || 0) + (ph.emails?.length || 0);
+  list.forEach((e) => {
+    ph.events.push(
+      normalizeScenarioEvent({ id: e.id, count: 1, actor: "", sort_order: order++ })
+    );
+  });
+  renderAllPhases();
+  const tactic = ph.mitre_tactic ? getTacticById(ph.mitre_tactic) : null;
+  const phaseLabel = tactic ? tactic.slug : ph.name || `fase ${pi + 1}`;
+  banner($("catalog-banner"), "ok", `${list.length} evento(s) añadidos → ${phaseLabel}`);
+  $("sc-phases")?.querySelector(`.phase-block[data-pi="${pi}"]`)?.scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
 
 async function refreshEventCatalog() {
   return applyEventCatalog(await api("/api/events"));
 }
 
-function renderEventCatalogTable() {
+function renderEventCatalogTableFiltered(catalog) {
   const body = $("event-catalog-body");
   const countEl = $("catalog-count");
   if (!body) return;
-  if (countEl) countEl.textContent = state.eventCatalog.length;
-  body.innerHTML = state.eventCatalog
+  const list = catalog || scenarioCatalogList();
+  if (countEl) countEl.textContent = list.length;
+  if (!list.length) {
+    body.innerHTML = '<tr><td colspan="9" class="meta">Sin eventos que coincidan con el filtro.</td></tr>';
+    return;
+  }
+  body.innerHTML = list
     .map(
       (e) => `
-    <tr>
+    <tr class="catalog-ev-row" data-event-id="${esc(e.id)}">
       <td><code>${esc(e.id)}</code></td>
       <td>${esc(e.name)}</td>
+      <td><span class="pill">${esc(e.format || "—")}</span></td>
       <td><span class="pill pill-system">${esc(e.system || "—")}</span></td>
+      <td>${esc(e.category || "—")}</td>
+      <td>${esc(e.action || "—")}</td>
       <td>${(e.tactics || []).map((t) => `<span class="pill">${esc(t)}</span>`).join(" ")}</td>
       <td><span class="meta">${esc((e.techniques || []).join(", "))}</span></td>
+      <td><button type="button" class="btn btn-primary btn-sm catalog-add-ev" data-id="${esc(e.id)}">+ Añadir</button></td>
     </tr>`
     )
     .join("");
+  body.querySelectorAll(".catalog-add-ev").forEach((btn) => {
+    btn.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      addCatalogEventToPhase(btn.dataset.id);
+    });
+  });
+  body.querySelectorAll("tr.catalog-ev-row").forEach((row) => {
+    row.addEventListener("dblclick", () => addCatalogEventToPhase(row.dataset.eventId));
+  });
+}
+
+function renderEventCatalogTable() {
+  renderEventCatalogTableFiltered(scenarioCatalogList());
+}
+
+/* ========== EVENTOS (pestaña dedicada) ========== */
+function eventsFilteredList() {
+  const q = ($("events-search")?.value || "").trim().toLowerCase();
+  const source = ($("events-filter-system")?.value || "").toLowerCase();
+  const category = ($("events-filter-category")?.value || "").toLowerCase();
+  const tactic = ($("events-filter-tactic")?.value || "").toUpperCase();
+  return state.eventCatalog.filter((e) => {
+    if (source && (e.system || "").toLowerCase() !== source) return false;
+    if (category && (e.category || "").toLowerCase() !== category) return false;
+    if (tactic && !(e.tactics || []).includes(tactic)) return false;
+    if (!q) return true;
+    const hay = [
+      e.id,
+      e.name,
+      e.format,
+      e.system,
+      e.category,
+      e.action,
+      e.ttp_slug,
+      (e.tactics || []).join(" "),
+      (e.techniques || []).join(" "),
+    ]
+      .join(" ")
+      .toLowerCase();
+    return hay.includes(q);
+  });
+}
+
+function renderEventsList() {
+  const list = eventsFilteredList();
+  const host = $("events-list");
+  const countEl = $("events-count");
+  if (!host) return;
+  if (countEl) countEl.textContent = list.length;
+  if (!list.length) {
+    host.innerHTML = '<p class="meta">Sin eventos que coincidan con el filtro.</p>';
+    return;
+  }
+  host.innerHTML = list
+    .map((e) => {
+      const active = e.id === state.eventsSelectedId ? " active" : "";
+      const tactics = (e.tactics || [])
+        .map((t) => `<span class="pill">${esc(t)}</span>`)
+        .join(" ");
+      const techs = esc((e.techniques || []).slice(0, 4).join(", "));
+      return `<button type="button" class="event-list-item${active}" data-event-id="${esc(e.id)}">
+        <div class="eli-id">${esc(e.id)}</div>
+        <div class="eli-name">${esc(e.name)}</div>
+        <div class="eli-meta">${esc(e.system || "—")} · ${esc(e.category || "—")} · ${esc(e.format || "")}</div>
+        <div class="eli-meta">${tactics} <span class="meta">${techs}</span></div>
+      </button>`;
+    })
+    .join("");
+  host.querySelectorAll(".event-list-item").forEach((btn) => {
+    btn.addEventListener("click", () => loadEventEditor(btn.dataset.eventId));
+  });
+}
+
+function renderTacticsGrid(selected) {
+  const grid = $("ev-tactics-grid");
+  if (!grid) return;
+  const sel = new Set(selected || []);
+  grid.innerHTML = state.mitreTactics
+    .map(
+      (t) => `<label class="tactic-check">
+        <input type="checkbox" class="ev-tactic-cb" value="${esc(t.id)}"${sel.has(t.id) ? " checked" : ""}>
+        <span><span class="tc-id">${esc(t.id)}</span> ${esc(t.name)}<br><span class="meta">${esc(t.slug)}</span></span>
+      </label>`
+    )
+    .join("");
+}
+
+function updateMitrePreview() {
+  const el = $("ev-mitre-preview");
+  if (!el) return;
+  const tactics = [...document.querySelectorAll(".ev-tactic-cb:checked")].map((c) => c.value);
+  const techniques = parseTechniquesInput($("ev-techniques")?.value || "");
+  const ttp = ($("ev-ttp")?.value || "").trim();
+  const tacticNames = tactics.map((id) => {
+    const t = state.mitreTactics.find((x) => x.id === id);
+    return t ? `${id} ${t.name}` : id;
+  });
+  el.innerHTML = `
+    <strong>Tácticas:</strong> ${tacticNames.length ? esc(tacticNames.join(" · ")) : "—"}<br>
+    <strong>Técnicas:</strong> ${techniques.length ? esc(techniques.join(", ")) : "—"}<br>
+    <strong>TTP slug:</strong> ${ttp ? esc(ttp) : "—"}`;
+}
+
+function parseTechniquesInput(text) {
+  return String(text || "")
+    .split(/[\n,]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+function techniquesToText(list) {
+  return (list || []).join(", ");
+}
+
+function fillEventEditor(ev) {
+  $("events-editor").style.display = "block";
+  $("events-detail-title").textContent = ev.id;
+  $("events-detail-meta").textContent = ev.is_builtin
+    ? `Builtin · actualizado ${ev.updated_at || "—"}`
+    : `Custom · actualizado ${ev.updated_at || "—"}`;
+  $("ev-id").readOnly = true;
+  $("ev-id").value = ev.id;
+  $("ev-name").value = ev.name || "";
+  $("ev-format").value = ev.format || "syslog_generic";
+  $("ev-source").value = ev.source_system || ev.system || "";
+  $("ev-category").value = ev.category || "";
+  $("ev-severity").value = ev.severity || "";
+  $("ev-action").value = ev.action || "";
+  $("ev-weight").value = ev.weight ?? 5;
+  $("ev-group").value = ev.event_group || "";
+  $("ev-ttp").value = ev.ttp || ev.ttp_slug || "";
+  $("ev-pri").value = ev.pri ?? 134;
+  $("ev-syslog-host").value = ev.syslog_hostname || "";
+  $("ev-tags").value = (ev.tags || []).join(", ");
+  $("ev-body").value = ev.body || "";
+  $("ev-techniques").value = techniquesToText(ev.techniques);
+  renderTacticsGrid(ev.tactics || []);
+  $("btn-ev-delete").style.display = ev.is_builtin ? "none" : "inline-block";
+  updateMitrePreview();
+}
+
+function clearEventEditorNew() {
+  state.eventsSelectedId = "";
+  $("events-editor").style.display = "block";
+  $("events-detail-title").textContent = "Nuevo evento";
+  $("events-detail-meta").textContent = "Define un ID único y guarda para crear en SQLite.";
+  $("ev-id").readOnly = false;
+  $("ev-id").value = "";
+  $("ev-name").value = "";
+  $("ev-format").value = "fortigate";
+  $("ev-source").value = "fortigate";
+  $("ev-category").value = "vpn";
+  $("ev-severity").value = "notice";
+  $("ev-action").value = "login";
+  $("ev-weight").value = 5;
+  $("ev-group").value = "";
+  $("ev-ttp").value = "initial-access";
+  $("ev-pri").value = 189;
+  $("ev-syslog-host").value = "{{devname}}";
+  $("ev-tags").value = "fortigate,vpn";
+  $("ev-body").value =
+    'date={{date}} time={{time}} devname="{{devname}}" devid="{{devserial}}" type="event" subtype="vpn" user="{{user}}" remip={{remote_access_ip}} action="login" simulated=true';
+  $("ev-techniques").value = "T1078, T1133";
+  renderTacticsGrid(["TA0001"]);
+  $("btn-ev-delete").style.display = "none";
+  updateMitrePreview();
+  renderEventsList();
+}
+
+async function loadEventEditor(eventId) {
+  try {
+    const ev = await api("/api/events/" + encodeURIComponent(eventId));
+    state.eventsSelectedId = eventId;
+    fillEventEditor(ev);
+    renderEventsList();
+  } catch (e) {
+    banner($("events-banner"), "live", e.message);
+  }
+}
+
+function collectEventPayload() {
+  const tactics = [...document.querySelectorAll(".ev-tactic-cb:checked")].map((c) => c.value);
+  return {
+    id: $("ev-id").value.trim(),
+    name: $("ev-name").value.trim(),
+    format: $("ev-format").value,
+    source_system: $("ev-source").value.trim(),
+    category: $("ev-category").value.trim(),
+    severity: $("ev-severity").value.trim(),
+    action: $("ev-action").value.trim(),
+    weight: parseInt($("ev-weight").value, 10) || 5,
+    event_group: $("ev-group").value.trim(),
+    ttp: $("ev-ttp").value.trim(),
+    pri: parseInt($("ev-pri").value, 10) || 134,
+    syslog_hostname: $("ev-syslog-host").value.trim(),
+    tags: $("ev-tags")
+      .value.split(",")
+      .map((s) => s.trim())
+      .filter(Boolean),
+    body: $("ev-body").value,
+    tactics,
+    techniques: parseTechniquesInput($("ev-techniques").value),
+  };
+}
+
+async function saveEventEditor() {
+  const payload = collectEventPayload();
+  const isNew = !$("ev-id").readOnly && !state.eventsSelectedId;
+  if (!payload.id) {
+    banner($("events-banner"), "dry", "ID requerido");
+    return;
+  }
+  if (!payload.name || !payload.body.trim()) {
+    banner($("events-banner"), "dry", "Nombre y plantilla (body) son obligatorios");
+    return;
+  }
+  try {
+    let res;
+    if (isNew) {
+      res = await api("/api/events", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      state.eventsSelectedId = payload.id;
+      $("ev-id").readOnly = true;
+    } else {
+      res = await api("/api/events/" + encodeURIComponent(payload.id), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+    }
+    applyEventCatalog(res);
+    fillEventEditor(res.event);
+    renderEventsList();
+    banner($("events-banner"), "ok", `Guardado: ${payload.id}`);
+  } catch (e) {
+    banner($("events-banner"), "live", e.message);
+  }
+}
+
+async function deleteEventEditor() {
+  const id = $("ev-id").value.trim();
+  if (!id || !confirm(`¿Eliminar evento ${id}?`)) return;
+  try {
+    const res = await api("/api/events/" + encodeURIComponent(id), { method: "DELETE" });
+    applyEventCatalog(res);
+    state.eventsSelectedId = "";
+    $("events-editor").style.display = "none";
+    $("events-detail-title").textContent = "Detalle del evento";
+    $("events-detail-meta").textContent = "Evento eliminado. Selecciona otro de la lista.";
+    renderEventsList();
+    banner($("events-banner"), "ok", `Eliminado: ${id}`);
+  } catch (e) {
+    banner($("events-banner"), "live", e.message);
+  }
+}
+
+function cloneEventEditor() {
+  const src = $("ev-id").value.trim();
+  if (!src) return;
+  clearEventEditorNew();
+  $("ev-id").value = src + "_copy";
+  $("ev-name").value = ($("ev-name").value || src) + " (copia)";
+  $("ev-body").value = $("ev-body").value;
+  banner($("events-banner"), "dry", "Duplicado como borrador — ajusta el ID y guarda.");
+}
+
+async function refreshEventsTab() {
+  const qs = new URLSearchParams();
+  const source = $("events-filter-system")?.value;
+  const category = $("events-filter-category")?.value;
+  if (source) qs.set("source", source);
+  if (category) qs.set("category", category);
+  const url = qs.toString() ? "/api/events?" + qs.toString() : "/api/events";
+  applyEventCatalog(await api(url));
+  renderEventsList();
+  if (state.eventsSelectedId) {
+    try {
+      fillEventEditor(await api("/api/events/" + encodeURIComponent(state.eventsSelectedId)));
+    } catch (_) {
+      state.eventsSelectedId = "";
+    }
+  }
+}
+
+/* ========== CADENAS LINUX (editor) ========== */
+function actLegitimacyLabel(raw) {
+  const v = (raw || "").toLowerCase();
+  if (v === "mixed") return "Mixta";
+  if (v === "illegitimate") return "Ilegítima";
+  return "Legítima";
+}
+
+function actLegitimacyBadge(raw) {
+  const v = (raw || "").toLowerCase();
+  if (v === "mixed") return "mixed-badge";
+  if (v === "illegitimate") return "illegit-badge";
+  return "legit-badge";
+}
+
+function actEffectiveLegitimacy(chain) {
+  return (chain.effective_legitimacy || chain.legitimacy || "legitimate").toLowerCase();
+}
+
+function linuxEventCatalog() {
+  return (state.eventCatalog || []).filter((e) => {
+    const src = (e.source_system || e.system || "").toLowerCase();
+    const id = (e.id || "").toLowerCase();
+    return src === "linux" || id.startsWith("linux_");
+  });
+}
+
+function actEventOptionsHtml(selected) {
+  const events = linuxEventCatalog();
+  if (!events.length) {
+    return '<option value="">(sin eventos Linux — abre pestaña Eventos)</option>';
+  }
+  return events
+    .map(
+      (e) =>
+        `<option value="${esc(e.id)}"${e.id === selected ? " selected" : ""}>${esc(e.id)} — ${esc(e.name || "")}</option>`
+    )
+    .join("");
+}
+
+function actCategoryOptions(selected, forEditor) {
+  const cats = [...new Set((state.activityChains || []).map((c) => c.category).filter(Boolean))].sort();
+  const sel = (selected || "").trim();
+  if (sel && !cats.includes(sel)) cats.push(sel);
+  cats.sort();
+  const empty = forEditor
+    ? '<option value="">— sin categoría —</option>'
+    : '<option value="">Todas las categorías</option>';
+  return (
+    empty +
+    cats.map((c) => `<option value="${esc(c)}"${c === sel ? " selected" : ""}>${esc(c)}</option>`).join("")
+  );
+}
+
+function fillActCategoryFilter() {
+  const sel = $("act-filter-category");
+  if (!sel) return;
+  const cur = sel.value;
+  sel.innerHTML = actCategoryOptions(cur, false);
+  if (cur) sel.value = cur;
+}
+
+function fillActCategoryEditor(selected) {
+  const sel = $("act-category");
+  if (!sel) return;
+  sel.innerHTML = actCategoryOptions(selected, true);
+}
+
+function actFilteredList() {
+  const q = ($("act-search")?.value || "").trim().toLowerCase();
+  const leg = ($("act-filter-legit")?.value || "").toLowerCase();
+  const cat = ($("act-filter-category")?.value || "").trim();
+  return (state.activityChains || []).filter((c) => {
+    if (leg && actEffectiveLegitimacy(c) !== leg) return false;
+    if (cat && (c.category || "") !== cat) return false;
+    if (!q) return true;
+    const hay = [c.id, c.name, c.category, c.description, c.objective].join(" ").toLowerCase();
+    return hay.includes(q);
+  });
+}
+
+function actListItemHtml(c) {
+  const active = c.id === state.activitySelectedId ? " active" : "";
+  const eff = actEffectiveLegitimacy(c);
+  const pill = actLegitimacyBadge(eff);
+  const tag = actLegitimacyLabel(eff);
+  return `<button type="button" class="event-list-item${active}" data-act-id="${esc(c.id)}">
+    <span class="${pill}">${tag}</span>
+    <div class="eli-name">${esc(c.name)}</div>
+    <div class="eli-meta"><code>${esc(c.id)}</code> · ${esc(c.category || "—")} · ${c.step_count || 0} logs</div>
+  </button>`;
+}
+
+function renderActList() {
+  const list = actFilteredList();
+  const host = $("act-list");
+  if (!host) return;
+  $("act-count").textContent = list.length;
+  const stats = state.activityStats || {};
+  $("act-stats").textContent =
+    `Total: ${stats.chains || 0} · ${stats.legitimate || 0} legítimas · ${stats.illegitimate || 0} ilegítimas · ${stats.mixed || 0} mixtas · ${stats.steps || 0} logs`;
+  if (!list.length) {
+    host.innerHTML = '<p class="meta">Sin cadenas. Importa YAML o crea una cadena mixta.</p>';
+    return;
+  }
+  const legFilter = ($("act-filter-legit")?.value || "").toLowerCase();
+  if (legFilter) {
+    host.innerHTML = list.map(actListItemHtml).join("");
+  } else {
+    const groups = [
+      { key: "legitimate", title: "Legítimas" },
+      { key: "illegitimate", title: "Ilegítimas" },
+      { key: "mixed", title: "Mixtas" },
+    ];
+    const buckets = { legitimate: [], illegitimate: [], mixed: [] };
+    list.forEach((c) => buckets[actEffectiveLegitimacy(c)]?.push(c));
+    host.innerHTML = groups
+      .filter((g) => buckets[g.key].length)
+      .map(
+        (g) =>
+          `<div class="act-group-title">${g.title} (${buckets[g.key].length})</div>` +
+          buckets[g.key].map(actListItemHtml).join("")
+      )
+      .join("");
+  }
+  host.querySelectorAll("[data-act-id]").forEach((btn) => {
+    btn.addEventListener("click", () => loadActivityDetail(btn.dataset.actId));
+  });
+}
+
+function renderActLogsEditor(logs) {
+  const host = $("act-logs-editor");
+  if (!host) return;
+  const items = (logs || []).length ? logs : [];
+  if (!items.length) {
+    host.innerHTML = '<p class="meta">Sin logs. Pulsa «+ Log» para añadir pasos editables.</p>';
+    return;
+  }
+  host.innerHTML = items
+    .map((log, idx) => {
+      const leg = (log.legitimacy || "legitimate").toLowerCase();
+      const legitSel = leg === "illegitimate" ? "illegitimate" : "legitimate";
+      return `<div class="chain-log-edit" data-log-idx="${idx}">
+        <div class="row">
+          <div><label># orden</label><input type="number" class="act-log-order" min="1" value="${log.sort_order ?? idx + 1}"></div>
+          <div><label>Legitimidad log</label>
+            <select class="act-log-legit">
+              <option value="legitimate"${legitSel === "legitimate" ? " selected" : ""}>Legítimo</option>
+              <option value="illegitimate"${legitSel === "illegitimate" ? " selected" : ""}>Ilegítimo</option>
+            </select>
+          </div>
+          <div><label>&nbsp;</label><button type="button" class="btn btn-ghost btn-sm act-log-del">Quitar</button></div>
+        </div>
+        <label>Evento Linux</label>
+        <select class="act-log-event">${actEventOptionsHtml(log.event_id || "")}</select>
+        <label>Comando simulado</label>
+        <input type="text" class="act-log-cmd" value="${esc(log.command_line || "")}" placeholder="ej. ls -la /var/log">
+        <div class="row">
+          <div><label>Delay min (ms)</label><input type="number" class="act-log-min" min="0" value="${log.min_delay_ms ?? 0}"></div>
+          <div><label>Delay max (ms)</label><input type="number" class="act-log-max" min="0" value="${log.max_delay_ms ?? 0}"></div>
+          <div style="align-self:end;padding-top:18px"><label><input type="checkbox" class="act-log-opt"${log.optional ? " checked" : ""}> Opcional</label></div>
+        </div>
+      </div>`;
+    })
+    .join("");
+  host.querySelectorAll(".act-log-del").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      btn.closest(".chain-log-edit")?.remove();
+      if (!host.querySelector(".chain-log-edit")) {
+        host.innerHTML = '<p class="meta">Sin logs. Pulsa «+ Log» para añadir pasos editables.</p>';
+      }
+    });
+  });
+}
+
+function collectActLogsFromEditor() {
+  const rows = [...document.querySelectorAll("#act-logs-editor .chain-log-edit")];
+  return rows
+    .map((row, i) => ({
+      sort_order: parseInt(row.querySelector(".act-log-order")?.value, 10) || i + 1,
+      event_id: row.querySelector(".act-log-event")?.value || "",
+      command_line: (row.querySelector(".act-log-cmd")?.value || "").trim(),
+      min_delay_ms: parseInt(row.querySelector(".act-log-min")?.value, 10) || 0,
+      max_delay_ms: parseInt(row.querySelector(".act-log-max")?.value, 10) || 0,
+      optional: !!row.querySelector(".act-log-opt")?.checked,
+      legitimacy: row.querySelector(".act-log-legit")?.value || "legitimate",
+    }))
+    .filter((l) => l.event_id);
+}
+
+function fillActivityEditor(detail) {
+  const eff = detail.effective_legitimacy || detail.legitimacy || "legitimate";
+  $("act-detail").style.display = "block";
+  $("act-detail-title").textContent = detail.name || detail.id;
+  $("act-detail-meta").textContent = `${actLegitimacyLabel(eff)} · ${detail.category || "—"} · ${(detail.logs || detail.steps)?.length || 0} logs editables`;
+  $("act-id").value = detail.id;
+  $("act-name").value = detail.name || "";
+  $("act-legitimacy").value =
+    detail.legitimacy === "mixed" || eff === "mixed"
+      ? "mixed"
+      : eff === "illegitimate"
+        ? "illegitimate"
+        : "legitimate";
+  fillActCategoryEditor(detail.category || "");
+  $("act-severity").value = detail.severity || "info";
+  $("act-objective").value = detail.objective || detail.description || "";
+  renderActLogsEditor(detail.logs || detail.steps || []);
+}
+
+async function loadActivityDetail(chainId) {
+  state.activitySelectedId = chainId;
+  state.activityIsNew = false;
+  renderActList();
+  try {
+    const detail = await api("/api/chains/" + encodeURIComponent(chainId));
+    $("act-id").readOnly = true;
+    fillActivityEditor(detail);
+  } catch (e) {
+    banner($("act-banner"), "live", "Error: " + e.message);
+  }
+}
+
+function newMixedChain() {
+  state.activitySelectedId = "";
+  state.activityIsNew = true;
+  const id = "chain_mixed_" + Date.now().toString(36);
+  $("act-id").readOnly = false;
+  fillActivityEditor({
+    id,
+    name: "Cadena mixta nueva",
+    legitimacy: "mixed",
+    effective_legitimacy: "mixed",
+    category: "mixed",
+    severity: "info",
+    objective: "",
+    logs: [],
+  });
+  $("act-detail-title").textContent = "Nueva cadena";
+  $("act-detail-meta").textContent = "Combina logs legítimos e ilegítimos y guarda.";
+  renderActList();
+}
+
+function addActLogRow() {
+  const host = $("act-logs-editor");
+  if (!host) return;
+  if (host.querySelector("p.meta") && !host.querySelector(".chain-log-edit")) {
+    host.innerHTML = "";
+  }
+  const n = host.querySelectorAll(".chain-log-edit").length;
+  const defaultEvent = linuxEventCatalog()[0]?.id || "";
+  const row = document.createElement("div");
+  row.innerHTML = `<div class="chain-log-edit" data-log-idx="${n}">
+    <div class="row">
+      <div><label># orden</label><input type="number" class="act-log-order" min="1" value="${n + 1}"></div>
+      <div><label>Legitimidad log</label>
+        <select class="act-log-legit">
+          <option value="legitimate">Legítimo</option>
+          <option value="illegitimate">Ilegítimo</option>
+        </select>
+      </div>
+      <div><label>&nbsp;</label><button type="button" class="btn btn-ghost btn-sm act-log-del">Quitar</button></div>
+    </div>
+    <label>Evento Linux</label>
+    <select class="act-log-event">${actEventOptionsHtml(defaultEvent)}</select>
+    <label>Comando simulado</label>
+    <input type="text" class="act-log-cmd" value="" placeholder="ej. whoami">
+    <div class="row">
+      <div><label>Delay min (ms)</label><input type="number" class="act-log-min" min="0" value="500"></div>
+      <div><label>Delay max (ms)</label><input type="number" class="act-log-max" min="0" value="1500"></div>
+      <div style="align-self:end;padding-top:18px"><label><input type="checkbox" class="act-log-opt"> Opcional</label></div>
+    </div>
+  </div>`;
+  const block = row.firstElementChild;
+  block.querySelector(".act-log-del").addEventListener("click", () => {
+    block.remove();
+    if (!host.querySelector(".chain-log-edit")) {
+      host.innerHTML = '<p class="meta">Sin logs. Pulsa «+ Log» para añadir pasos editables.</p>';
+    }
+  });
+  host.appendChild(block);
+}
+
+function collectActChainPayload() {
+  return {
+    id: ($("act-id")?.value || "").trim(),
+    name: ($("act-name")?.value || "").trim(),
+    legitimacy: $("act-legitimacy")?.value || "legitimate",
+    category: ($("act-category")?.value || "").trim(),
+    severity: ($("act-severity")?.value || "info").trim(),
+    objective: ($("act-objective")?.value || "").trim(),
+    logs: collectActLogsFromEditor(),
+  };
+}
+
+async function saveActChain() {
+  const payload = collectActChainPayload();
+  if (!payload.id) {
+    banner($("act-banner"), "dry", "ID de cadena requerido");
+    return;
+  }
+  if (!payload.name) {
+    banner($("act-banner"), "dry", "Nombre requerido");
+    return;
+  }
+  if (!payload.logs.length) {
+    banner($("act-banner"), "dry", "Añade al menos un log con evento Linux");
+    return;
+  }
+  const isNew = state.activityIsNew;
+  try {
+    const url = isNew
+      ? "/api/chains"
+      : "/api/chains/" + encodeURIComponent(payload.id);
+    const res = await api(url, {
+      method: isNew ? "POST" : "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    state.activityIsNew = false;
+    state.activitySelectedId = payload.id;
+    $("act-id").readOnly = true;
+    banner($("act-banner"), "ok", `Cadena guardada: ${payload.id}`);
+    await refreshActivityTab();
+    if (res.chain) fillActivityEditor(res.chain);
+    else await loadActivityDetail(payload.id);
+  } catch (e) {
+    banner($("act-banner"), "live", "Error al guardar: " + e.message);
+  }
+}
+
+async function refreshActivityTab() {
+  const data = await api("/api/chains");
+  state.activityChains = data.chains || [];
+  state.activityStats = data.stats || {};
+  fillActCategoryFilter();
+  renderActList();
+  if (state.activitySelectedId && !state.activityIsNew) {
+    await loadActivityDetail(state.activitySelectedId);
+  }
+}
+
+async function initActivityTab() {
+  if (!state.eventCatalog.length) {
+    try {
+      await applyEventCatalog(await api("/api/events?source=linux"));
+    } catch (_) {
+      /* catálogo opcional para el selector */
+    }
+  }
+  $("act-search")?.addEventListener("input", renderActList);
+  $("act-filter-legit")?.addEventListener("change", renderActList);
+  $("act-filter-category")?.addEventListener("change", renderActList);
+  $("btn-act-refresh")?.addEventListener("click", () =>
+    refreshActivityTab().catch((e) => banner($("act-banner"), "live", e.message))
+  );
+  $("btn-act-new-mixed")?.addEventListener("click", newMixedChain);
+  $("btn-act-add-log")?.addEventListener("click", addActLogRow);
+  $("btn-act-save")?.addEventListener("click", () =>
+    saveActChain().catch((e) => banner($("act-banner"), "live", e.message))
+  );
+  $("btn-act-import")?.addEventListener("click", async () => {
+    try {
+      const r = await api("/api/chains/import", { method: "POST" });
+      banner($("act-banner"), "ok", `Importadas ${r.chains_total} cadenas (${r.steps_total} pasos)`);
+      await refreshActivityTab();
+    } catch (e) {
+      banner($("act-banner"), "live", "Error import: " + e.message);
+    }
+  });
+  await refreshActivityTab();
+  state.activityReady = true;
+}
+
+async function loadActivityChainsForScenario() {
+  try {
+    let data = await api("/api/chains");
+    if (!(data.chains || []).length) {
+      try {
+        await api("/api/chains/import", { method: "POST" });
+        data = await api("/api/chains");
+      } catch (_) {
+        /* import opcional si no hay YAML */
+      }
+    }
+    state.activityChains = data.chains || [];
+    state.activityStats = data.stats || {};
+    const hint = $("sc-chains-hint");
+    const countEl = $("sc-chains-count");
+    if (countEl) countEl.textContent = state.activityChains.length;
+    if (hint) {
+      hint.style.display = state.activityChains.length ? "none" : "block";
+    }
+    fillScAddChainSelect();
+  } catch (_) {
+    state.activityChains = [];
+  }
+}
+
+async function initEventsTab() {
+  if (!state.mitreTactics.length) {
+    const mt = await api("/api/mitre/tactics");
+    state.mitreTactics = mt.tactics || [];
+    const sel = $("events-filter-tactic");
+    if (sel) {
+      sel.innerHTML =
+        '<option value="">Todas</option>' +
+        state.mitreTactics
+          .map((t) => `<option value="${esc(t.id)}">${esc(t.id)} · ${esc(t.name)}</option>`)
+          .join("");
+    }
+    renderTacticsGrid([]);
+  }
+  await refreshEventsTab();
+  state.eventsReady = true;
+}
+
+/* ========== COMANDOS LINUX (sub-vista Eventos) ========== */
+const cmdState = { list: [], selectedId: null, ready: false };
+
+function legitLabel(v) {
+  return v === "legitimate" ? "Legítimo" : v === "illegitimate" ? "Ilegítimo" : v || "—";
+}
+
+function legitPill(v) {
+  const cls = v === "legitimate" ? "pill-legit" : "pill-illegit";
+  return `<span class="pill ${cls}">${esc(legitLabel(v))}</span>`;
+}
+
+function cmdFilteredList() {
+  const q = ($("cmd-search")?.value || "").trim().toLowerCase();
+  const leg = ($("cmd-filter-legit")?.value || "").toLowerCase();
+  const cat = ($("cmd-filter-category")?.value || "").toLowerCase();
+  return cmdState.list.filter((c) => {
+    if (leg && (c.legitimacy || "").toLowerCase() !== leg) return false;
+    if (cat && (c.category || "").toLowerCase() !== cat) return false;
+    if (!q) return true;
+    const hay = [c.value, c.category, c.description, c.legitimacy].join(" ").toLowerCase();
+    return hay.includes(q);
+  });
+}
+
+function renderCmdList() {
+  const list = cmdFilteredList();
+  const host = $("cmd-list");
+  if (!host) return;
+  $("cmd-count").textContent = list.length;
+  const legitN = cmdState.list.filter((c) => c.legitimacy === "legitimate").length;
+  const illegN = cmdState.list.filter((c) => c.legitimacy === "illegitimate").length;
+  $("cmd-stats").textContent = `Total pool: ${cmdState.list.length} · ${legitN} legítimos · ${illegN} ilegítimos`;
+  const cats = [...new Set(cmdState.list.map((c) => c.category).filter(Boolean))].sort();
+  const catSel = $("cmd-filter-category");
+  if (catSel && catSel.options.length <= 1) {
+    catSel.innerHTML =
+      '<option value="">Todas</option>' + cats.map((c) => `<option value="${esc(c)}">${esc(c)}</option>`).join("");
+  }
+  if (!list.length) {
+    host.innerHTML = '<p class="meta">Sin comandos. Ejecuta db import-csv o añade uno.</p>';
+    return;
+  }
+  host.innerHTML = list
+    .map((c) => {
+      const active = c.id === cmdState.selectedId ? " active" : "";
+      return `<button type="button" class="event-list-item${active}" data-cmd-id="${c.id}">
+        ${legitPill(c.legitimacy)}
+        <div class="eli-name mono" style="margin-top:6px">${esc(c.value)}</div>
+        <div class="eli-meta">${esc(c.category || "—")} · ${esc(c.description || "")}</div>
+      </button>`;
+    })
+    .join("");
+  host.querySelectorAll(".event-list-item").forEach((btn) => {
+    btn.addEventListener("click", () => fillCmdEditor(cmdState.list.find((x) => String(x.id) === btn.dataset.cmdId)));
+  });
+}
+
+function fillCmdEditor(cmd) {
+  if (!cmd) return;
+  cmdState.selectedId = cmd.id;
+  $("cmd-editor").style.display = "block";
+  $("cmd-detail-title").textContent = legitLabel(cmd.legitimacy);
+  $("cmd-detail-meta").textContent = `ID ${cmd.id} · ${cmd.category || "sin categoría"}`;
+  $("cmd-value").value = cmd.value || "";
+  $("cmd-legitimacy").value = cmd.legitimacy === "legitimate" ? "legitimate" : "illegitimate";
+  $("cmd-category").value = cmd.category || "";
+  $("cmd-description").value = cmd.description || "";
+  $("btn-cmd-delete").style.display = "inline-block";
+  renderCmdList();
+}
+
+function clearCmdEditorNew() {
+  cmdState.selectedId = null;
+  $("cmd-editor").style.display = "block";
+  $("cmd-detail-title").textContent = "Nuevo comando";
+  $("cmd-detail-meta").textContent = "Se guardará en pool linux_shell";
+  $("cmd-value").value = "";
+  $("cmd-legitimacy").value = "illegitimate";
+  $("cmd-category").value = "";
+  $("cmd-description").value = "";
+  renderCmdList();
+}
+
+async function refreshCommandsTab() {
+  const leg = $("cmd-filter-legit")?.value || "";
+  const qs = leg ? "?legitimacy=" + encodeURIComponent(leg) : "";
+  const data = await api("/api/commands" + qs);
+  cmdState.list = data.commands || [];
+  renderCmdList();
+}
+
+async function saveCmdEditor() {
+  const payload = {
+    value: $("cmd-value").value.trim(),
+    legitimacy: $("cmd-legitimacy").value,
+    category: $("cmd-category").value.trim(),
+    description: $("cmd-description").value.trim(),
+  };
+  if (!payload.value) {
+    banner($("events-banner"), "dry", "El comando no puede estar vacío");
+    return;
+  }
+  try {
+    let res;
+    if (cmdState.selectedId) {
+      res = await api("/api/commands/" + cmdState.selectedId, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+    } else {
+      res = await api("/api/commands", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+    }
+    cmdState.list = res.commands || [];
+    const saved = cmdState.list.find((c) => c.value === payload.value);
+    if (saved) cmdState.selectedId = saved.id;
+    renderCmdList();
+    if (saved) fillCmdEditor(saved);
+    banner($("events-banner"), "ok", "Comando guardado");
+  } catch (e) {
+    banner($("events-banner"), "live", e.message);
+  }
+}
+
+async function deleteCmdEditor() {
+  if (!cmdState.selectedId || !confirm("¿Eliminar este comando?")) return;
+  try {
+    const res = await api("/api/commands/" + cmdState.selectedId, { method: "DELETE" });
+    cmdState.list = res.commands || [];
+    cmdState.selectedId = null;
+    $("cmd-editor").style.display = "none";
+    renderCmdList();
+    banner($("events-banner"), "ok", "Comando eliminado");
+  } catch (e) {
+    banner($("events-banner"), "live", e.message);
+  }
+}
+
+function setEventsView(mode) {
+  const templates = mode === "templates";
+  $("events-mode-templates").classList.toggle("active", templates);
+  $("events-mode-commands").classList.toggle("active", !templates);
+  $("events-view-templates").style.display = templates ? "grid" : "none";
+  $("events-view-commands").style.display = templates ? "none" : "grid";
+  if (!templates && !cmdState.ready) {
+    refreshCommandsTab().then(() => {
+      cmdState.ready = true;
+    });
+  }
+}
+
+$("events-mode-templates")?.addEventListener("click", () => setEventsView("templates"));
+$("events-mode-commands")?.addEventListener("click", () => setEventsView("commands"));
+$("btn-cmd-refresh")?.addEventListener("click", () => refreshCommandsTab().catch((e) => banner($("events-banner"), "live", e.message)));
+$("btn-cmd-new")?.addEventListener("click", clearCmdEditorNew);
+$("btn-cmd-save")?.addEventListener("click", () => saveCmdEditor());
+$("btn-cmd-delete")?.addEventListener("click", () => deleteCmdEditor());
+$("cmd-search")?.addEventListener("input", renderCmdList);
+$("cmd-filter-legit")?.addEventListener("change", () => refreshCommandsTab().catch((e) => banner($("events-banner"), "live", e.message)));
+$("cmd-filter-category")?.addEventListener("change", renderCmdList);
+
+$("btn-events-refresh")?.addEventListener("click", () => refreshEventsTab().catch((e) => banner($("events-banner"), "live", e.message)));
+$("btn-events-new")?.addEventListener("click", clearEventEditorNew);
+$("btn-ev-save")?.addEventListener("click", () => saveEventEditor());
+$("btn-ev-delete")?.addEventListener("click", () => deleteEventEditor());
+$("btn-ev-clone")?.addEventListener("click", cloneEventEditor);
+$("events-search")?.addEventListener("input", renderEventsList);
+$("events-filter-system")?.addEventListener("change", () => refreshEventsTab().catch((e) => banner($("events-banner"), "live", e.message)));
+$("events-filter-category")?.addEventListener("change", () => refreshEventsTab().catch((e) => banner($("events-banner"), "live", e.message)));
+$("events-filter-tactic")?.addEventListener("change", renderEventsList);
+$("ev-ttp")?.addEventListener("input", updateMitrePreview);
+$("ev-techniques")?.addEventListener("input", updateMitrePreview);
+document.addEventListener("change", (ev) => {
+  if (ev.target?.classList?.contains("ev-tactic-cb")) updateMitrePreview();
+});
+
+function fillScAddChainSelect() {
+  const sel = $("sc-add-chain");
+  if (!sel) return;
+  const cur = sel.value;
+  if (!(state.activityChains || []).length) {
+    sel.innerHTML = '<option value="">(importa cadenas primero)</option>';
+    return;
+  }
+  sel.innerHTML =
+    '<option value="">— elegir cadena —</option>' +
+    state.activityChains
+      .map((c) => {
+        const eff = actEffectiveLegitimacy(c);
+        const tag = eff === "mixed" ? "mixta" : eff === "illegitimate" ? "ilegít" : "legit";
+        const selected = c.id === cur ? " selected" : "";
+        return `<option value="${esc(c.id)}"${selected}>${esc(c.id)} · ${esc(tag)} · ${esc(c.name)}</option>`;
+      })
+      .join("");
+  if (cur && state.activityChains.some((c) => c.id === cur)) sel.value = cur;
+}
+
+function phaseFromChain(name, chainId) {
+  const slug = (name || "cadena_linux").trim().replace(/\s+/g, "_").toLowerCase();
+  const cid = chainId || state.activityChains[0]?.id || "";
+  return {
+    phase_type: "chain",
+    name: slug,
+    description: "Fase de cadenas Linux (logs agrupados con delays)",
+    chains: [{ chain_id: cid, actor: "", sort_order: 0 }],
+  };
 }
 
 function phaseFromEmail(name) {
@@ -877,6 +2033,61 @@ function renderEmailPhaseBlock(ph, pi) {
   return div;
 }
 
+function renderChainPhaseRow(ch) {
+  const row = document.createElement("div");
+  row.className = "chain-phase-row";
+  const chain = state.activityChains.find((c) => c.id === ch.chain_id);
+  row.innerHTML = `
+    <div><label>Cadena</label><select class="ch-id">${chainOptions(ch.chain_id)}</select><div class="meta ch-meta">${chain ? esc(chain.name) + " · " + (chain.step_count || 0) + " logs" : ""}</div></div>
+    <div><label>actor</label><select class="ch-actor">${actorOptions(ch.actor)}</select></div>
+    <div><label>&nbsp;</label><button type="button" class="btn btn-ghost btn-sm rm-ch">×</button></div>`;
+  row.querySelector(".ch-id").addEventListener("change", (e) => {
+    const picked = state.activityChains.find((c) => c.id === e.target.value);
+    row.querySelector(".ch-meta").textContent = picked
+      ? `${picked.name} · ${picked.step_count || 0} logs · delays entre pasos`
+      : "";
+  });
+  row.querySelector(".rm-ch").addEventListener("click", () => row.remove());
+  return row;
+}
+
+function renderChainPhaseBlock(ph, pi) {
+  const div = document.createElement("div");
+  div.className = "phase-block phase-chain";
+  div.dataset.pi = pi;
+  div.dataset.phaseType = "chain";
+  const items = ph.chains || (ph.events || []).filter((e) => e.chain_id).map((e) => ({
+    chain_id: e.chain_id,
+    actor: e.actor || "",
+  }));
+  div.innerHTML = `
+    <div class="mitre-badge pill-chain">🔗 Fase cadena · ${esc(ph.name || "cadena")}</div>
+    <div class="row">
+      <div><label>Nombre fase (slug)</label><input class="ph-name" value="${esc(ph.name || "cadena")}"></div>
+      <div style="flex:0"><label>&nbsp;</label><button type="button" class="btn btn-danger btn-sm rm-phase">Eliminar</button></div>
+    </div>
+    <label>Descripción</label>
+    <input class="ph-desc" value="${esc(ph.description || "")}">
+    <div class="chains-wrap"></div>
+    <button type="button" class="btn btn-ghost btn-sm add-chain-phase">+ Cadena</button>`;
+  const wrap = div.querySelector(".chains-wrap");
+  items.forEach((ch) => wrap.appendChild(renderChainPhaseRow(ch)));
+  div.querySelector(".add-chain-phase").addEventListener("click", () => {
+    if (!state.activityChains.length) {
+      banner($("sc-banner"), "dry", "Sin cadenas. Importa YAML en pestaña Cadenas.");
+      return;
+    }
+    wrap.appendChild(
+      renderChainPhaseRow({ chain_id: state.activityChains[0]?.id || "", actor: "" })
+    );
+  });
+  div.querySelector(".rm-phase").addEventListener("click", () => {
+    scPhases.splice(pi, 1);
+    renderAllPhases();
+  });
+  return div;
+}
+
 function renderEmailRow(em, block, inline) {
   const row = document.createElement("div");
   row.className = "event-row email-row" + (inline ? " email-row-inline" : "");
@@ -892,6 +2103,7 @@ function renderEmailRow(em, block, inline) {
 
 function renderPhaseBlock(ph, pi) {
   if (ph.phase_type === "email") return renderEmailPhaseBlock(ph, pi);
+  if (ph.phase_type === "chain") return renderChainPhaseBlock(ph, pi);
   return renderMitrePhaseBlock(ph, pi);
 }
 
@@ -921,16 +2133,24 @@ function renderMitrePhaseBlock(ph, pi) {
     <div class="meta ph-event-hint"></div>
     <div class="steps-wrap"></div>
     <div class="row phase-step-actions">
-      <button type="button" class="btn btn-ghost btn-sm add-event" disabled>+ Evento (MITRE)</button>
-      <button type="button" class="btn btn-ghost btn-sm add-email-inline pill-email">+ Correo</button>
+      <label class="step-add-label">Añadir paso</label>
+      <select class="ph-add-step-kind">
+        <option value="event">Evento simple (MITRE)</option>
+        <option value="chain">Cadena Linux (agrupación de logs)</option>
+        <option value="email">Correo HTML</option>
+      </select>
+      <button type="button" class="btn btn-ghost btn-sm ph-add-step">+ Añadir</button>
     </div>`;
 
   const wrap = div.querySelector(".steps-wrap");
+  const phaseEventIds = (synced.events || []).filter((e) => e.id && !e.chain_id).map((e) => e.id);
   mitrePhaseSteps(synced).forEach((step) => {
     if (step.type === "email") {
       wrap.appendChild(renderEmailRow(step.data, div, true));
+    } else if (step.type === "chain") {
+      wrap.appendChild(renderChainRow(step.data, div));
     } else {
-      wrap.appendChild(renderEventRow(step.data, div));
+      wrap.appendChild(renderEventRow(step.data, div, phaseEventIds));
     }
   });
 
@@ -941,26 +2161,42 @@ function renderMitrePhaseBlock(ph, pi) {
     const tid = div.querySelector(".ph-mitre").value;
     if (tid) applyMitreToPhaseBlock(div, tid, true);
   });
-  div.querySelector(".add-event").addEventListener("click", () => {
+  div.querySelector(".ph-add-step").addEventListener("click", () => {
+    const kind = div.querySelector(".ph-add-step-kind").value;
     const tid = div.querySelector(".ph-mitre").value;
+    if (kind === "chain") {
+      if (!state.activityChains.length) {
+        banner($("sc-banner"), "dry", "Sin cadenas. Importa YAML en pestaña Cadenas o pulsa «Importar cadenas» arriba.");
+        return;
+      }
+      wrap.appendChild(
+        renderChainRow(
+          normalizeScenarioEvent({ chain_id: state.activityChains[0]?.id || "", count: 1, actor: "" }),
+          div
+        )
+      );
+      return;
+    }
+    if (kind === "email") {
+      wrap.appendChild(
+        renderEmailRow(
+          {
+            template_id: state.emailCatalog[0]?.id || "ir_alert_tabletop",
+            to_address: "{{user}}@{{domain}}",
+            cc: "",
+            actor: "",
+          },
+          div,
+          true
+        )
+      );
+      return;
+    }
     wrap.appendChild(
       renderEventRow(
         normalizeScenarioEvent({ id: firstAllowedEventId(tid) || "", count: 1, actor: "" }),
-        div
-      )
-    );
-  });
-  div.querySelector(".add-email-inline").addEventListener("click", () => {
-    wrap.appendChild(
-      renderEmailRow(
-        {
-          template_id: state.emailCatalog[0]?.id || "ir_alert_tabletop",
-          to_address: "{{user}}@{{domain}}",
-          cc: "",
-          actor: "",
-        },
         div,
-        true
+        [...phaseEventIds, firstAllowedEventId(tid) || ""].filter(Boolean)
       )
     );
   });
@@ -972,12 +2208,12 @@ function renderMitrePhaseBlock(ph, pi) {
   return div;
 }
 
-function renderEventRow(ev, block) {
+function renderEventRow(ev, block, phaseEventIds = []) {
   const tid = block.querySelector(".ph-mitre").value;
   const row = document.createElement("div");
   row.className = "event-row";
   row.innerHTML = `
-    <div><label>event id</label><select class="ev-id">${eventOptions(ev.id, tid)}</select><div class="ev-ttp"></div></div>
+    <div><label>event id</label><select class="ev-id">${eventOptions(ev.id, tid, phaseEventIds)}</select><div class="ev-ttp"></div></div>
     <div><label>count</label><input class="ev-count" type="number" min="1" value="${ev.count ?? 1}"></div>
     <div><label>actor</label><select class="ev-actor">${actorOptions(ev.actor)}</select></div>
     <div><label>&nbsp;</label><button type="button" class="btn btn-ghost btn-sm rm-ev">×</button></div>`;
@@ -987,10 +2223,50 @@ function renderEventRow(ev, block) {
   return row;
 }
 
+function chainOptions(selected) {
+  const chains = state.activityChains || [];
+  if (!chains.length) return '<option value="">(importa cadenas primero)</option>';
+  return chains
+    .map((c) => {
+      const eff = actEffectiveLegitimacy(c);
+      const tag = eff === "mixed" ? "mixta" : eff === "illegitimate" ? "ilegít" : "legit";
+      const sel = c.id === selected ? " selected" : "";
+      return `<option value="${esc(c.id)}"${sel}>${esc(c.id)} · ${esc(tag)} · ${esc(c.name)}</option>`;
+    })
+    .join("");
+}
+
+function renderChainRow(ev, block) {
+  const row = document.createElement("div");
+  row.className = "chain-row chain-row-inline";
+  const chain = state.activityChains.find((c) => c.id === ev.chain_id);
+  const eff = chain ? actEffectiveLegitimacy(chain) : "";
+  const badge =
+    eff === "mixed"
+      ? '<span class="mixed-badge">cadena mixta</span>'
+      : eff === "illegitimate"
+        ? '<span class="illegit-badge">cadena ilegítima</span>'
+        : '<span class="legit-badge">cadena legítima</span>';
+  row.innerHTML = `
+    <div class="chain-step-tag">🔗 Cadena · ${badge}</div>
+    <div><label>Cadena Linux</label><select class="ch-id">${chainOptions(ev.chain_id)}</select><div class="meta ch-meta">${chain ? esc(chain.name) + " · " + (chain.step_count || 0) + " logs agrupados" : ""}</div></div>
+    <div><label>actor</label><select class="ch-actor">${actorOptions(ev.actor)}</select></div>
+    <div><label>&nbsp;</label><button type="button" class="btn btn-ghost btn-sm rm-ch">×</button></div>`;
+  row.querySelector(".ch-id").addEventListener("change", (e) => {
+    const picked = state.activityChains.find((c) => c.id === e.target.value);
+    row.querySelector(".ch-meta").textContent = picked
+      ? `${picked.name} · ${picked.step_count || 0} pasos · delays entre logs`
+      : "";
+  });
+  row.querySelector(".rm-ch").addEventListener("click", () => row.remove());
+  return row;
+}
+
 function renderAllPhases() {
   const container = $("sc-phases");
   container.innerHTML = "";
   scPhases.forEach((ph, i) => container.appendChild(renderPhaseBlock(ph, i)));
+  fillCatalogTargetPhaseSelect();
 }
 
 function readPhasesFromUI() {
@@ -1014,10 +2290,29 @@ function readPhasesFromUI() {
       });
       return;
     }
+    if (ptype === "chain") {
+      const chains = [];
+      block.querySelectorAll(".chain-phase-row").forEach((row, i) => {
+        const cid = row.querySelector(".ch-id").value;
+        if (!cid) return;
+        chains.push({
+          chain_id: cid,
+          actor: row.querySelector(".ch-actor").value,
+          sort_order: i,
+        });
+      });
+      phases.push({
+        phase_type: "chain",
+        name: block.querySelector(".ph-name").value.trim().replace(/\s+/g, "_").toLowerCase() || "cadena",
+        description: block.querySelector(".ph-desc").value.trim(),
+        chains,
+      });
+      return;
+    }
     const events = [];
     const emails = [];
     let order = 0;
-    block.querySelectorAll(".steps-wrap > .event-row, .steps-wrap > .email-row").forEach((row) => {
+    block.querySelectorAll(".steps-wrap > .event-row, .steps-wrap > .email-row, .steps-wrap > .chain-row").forEach((row) => {
       if (row.classList.contains("email-row")) {
         emails.push({
           template_id: row.querySelector(".em-tpl").value,
@@ -1025,6 +2320,15 @@ function readPhasesFromUI() {
           cc: row.querySelector(".em-cc").value.trim(),
           sort_order: order++,
         });
+      } else if (row.classList.contains("chain-row")) {
+        events.push(
+          normalizeScenarioEvent({
+            chain_id: row.querySelector(".ch-id").value,
+            count: 1,
+            actor: row.querySelector(".ch-actor").value,
+            sort_order: order++,
+          })
+        );
       } else {
         events.push(
           normalizeScenarioEvent({
@@ -1101,6 +2405,7 @@ async function initScenarioTab() {
       api("/api/events"),
       api("/api/mitre/tactics"),
       api("/api/emails"),
+      loadActivityChainsForScenario(),
     ]);
     applyEventCatalog(events);
     state.emailCatalog = emails.catalog || [];
@@ -1158,7 +2463,13 @@ async function loadScenarioBuilder(nameOrId) {
     else if (!sc.use_config_actors && state.config?.actor_keys) state.actorKeys = state.config.actor_keys;
     scPhases = (sc.phases || []).map((p) => {
       const synced = syncPhaseWithMitre({ ...p });
-      synced.events = (synced.events || []).map(normalizeScenarioEvent);
+      if (synced.phase_type === "chain") {
+        synced.chains = (synced.chains || synced.events || [])
+          .filter((e) => e.chain_id)
+          .map((e) => normalizeScenarioEvent(e));
+      } else {
+        synced.events = (synced.events || []).map(normalizeScenarioEvent);
+      }
       synced.emails = synced.emails || [];
       return synced;
     });
@@ -1168,7 +2479,7 @@ async function loadScenarioBuilder(nameOrId) {
       name: sc.name,
       description: sc.description,
       phases: sc.phases?.length || 0,
-      events: sc.phases?.reduce((n, p) => n + (p.events || []).reduce((m, e) => m + (+e.count || 1), 0), 0) || 0,
+      events: scenarioStepCount(sc.phases),
       timeline_minutes: sc.timeline_minutes,
       file: scLoadedId + ".yml",
     };
@@ -1213,6 +2524,40 @@ $("btn-add-phase-email").addEventListener("click", () => {
   scPhases.push(phaseFromEmail(`correo_${scPhases.length + 1}`));
   renderAllPhases();
   banner($("sc-banner"), "ok", "Fase correo añadida");
+});
+
+$("btn-add-phase-chain").addEventListener("click", () => {
+  const chainId = $("sc-add-chain")?.value || "";
+  if (!chainId) {
+    banner($("sc-banner"), "dry", "Elige una cadena del desplegable o importa el catálogo YAML.");
+    return;
+  }
+  const chain = state.activityChains.find((c) => c.id === chainId);
+  const slug = (chain?.category || "cadena").replace(/\s+/g, "_").toLowerCase();
+  scPhases.push(phaseFromChain(`${slug}_${scPhases.length + 1}`, chainId));
+  renderAllPhases();
+  banner($("sc-banner"), "ok", `Fase cadena añadida: ${chain?.name || chainId}`);
+});
+
+$("btn-sc-import-chains")?.addEventListener("click", async () => {
+  try {
+    const r = await api("/api/chains/import", { method: "POST" });
+    await loadActivityChainsForScenario();
+    document.querySelectorAll(".phase-block").forEach((block) => {
+      block.querySelectorAll(".ch-id").forEach((sel) => {
+        const cur = sel.value;
+        sel.innerHTML = chainOptions(cur);
+      });
+    });
+    fillScAddChainSelect();
+    banner($("sc-banner"), "ok", `Cadenas importadas: ${r.chains_total} (${r.steps_total} logs)`);
+  } catch (e) {
+    banner($("sc-banner"), "live", "Error importando cadenas: " + e.message);
+  }
+});
+
+$("btn-sc-goto-chains")?.addEventListener("click", () => {
+  document.querySelector('[data-tab="activity"]')?.click();
 });
 
 $("btn-em-save").addEventListener("click", async () => {
@@ -1304,3 +2649,8 @@ $("btn-catalog-import").addEventListener("click", async () => {
 
 /* ---------- Init ---------- */
 initRunTab();
+
+
+$("btn-catalog-filter")?.addEventListener("click", () => applyScenarioCatalogFilter());
+
+$("btn-catalog-add-all")?.addEventListener("click", () => addAllFilteredCatalogEvents());

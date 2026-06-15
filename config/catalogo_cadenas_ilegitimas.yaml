@@ -1,0 +1,577 @@
+catalogo_cadenas_ilegitimas:
+  metadata:
+    nombre: "catalogo_cadenas_linux_ilegitimas"
+    version: "1.0"
+    uso: "Simulación defensiva, threat hunting, correlación SIEM y generación de alertas"
+    campo_clasificacion: "legitimidad"
+    valor_legitimidad: "non-legit"
+    nota_seguridad: >
+      Estas cadenas describen comportamientos sospechosos o maliciosos de forma abstracta.
+      No contienen payloads ejecutables. Deben usarse para detección, simulación controlada
+      y validación de reglas.
+
+  cadenas:
+
+    - id: "chain_nonlegit_ssh_sudo_limpieza_logs"
+      nombre: "Acceso SSH anómalo, sudo y limpieza de logs"
+      legitimidad: "non-legit"
+      categoria: "evasion_post_acceso"
+      severidad_sugerida: "critical"
+      objetivo_simulado: "Detectar una sesión remota seguida de elevación y manipulación de evidencias."
+      perfil_sospechoso:
+        usuario: "usuario_no_habitual | admin_fuera_de_horario"
+        origen: "ip_no_habitual | pais_no_esperado | vpn_no_corporativa"
+        horario: "fuera_de_horario"
+      entidades:
+        host: "{{host}}"
+        user: "{{user}}"
+        src_ip: "{{src_ip_anomala}}"
+      eventos_en_orden:
+        - orden: 1
+          event_ref: "auth_ssh_login_success"
+          delta_sugerido: "0s"
+          condicion: "origen no habitual"
+        - orden: 2
+          event_ref: "auth_ssh_session_opened"
+          delta_sugerido: "+1s"
+        - orden: 3
+          event_ref: "auth_sudo_command"
+          delta_sugerido: "+30s"
+          condicion: "sudo fuera del baseline"
+        - orden: 4
+          command_ref: "cmd_clear_auth_logs"
+          delta_sugerido: "+1m"
+        - orden: 5
+          command_ref: "cmd_clear_bash_history"
+          delta_sugerido: "+10s"
+        - orden: 6
+          command_ref: "cmd_disable_history_logging"
+          delta_sugerido: "+5s"
+        - orden: 7
+          event_ref: "auth_ssh_session_closed"
+          delta_sugerido: "+2m"
+      mitre:
+        - "T1021.004"
+        - "T1078"
+        - "T1548.003"
+        - "T1685.006"
+        - "T1070.003"
+        - "T1690"
+      señales_de_alerta:
+        - "Login desde origen nuevo"
+        - "Sudo inmediato tras login"
+        - "Truncado o borrado de logs"
+        - "Limpieza de historial de shell"
+        - "Sesión corta con acciones sensibles"
+      resultado_esperado_en_siem:
+        tipo_alerta: "possible_log_tampering_after_remote_access"
+        prioridad: "P1"
+        accion_recomendada:
+          - "Aislar host si el entorno lo permite"
+          - "Preservar evidencias"
+          - "Revisar sesiones activas"
+          - "Validar integridad de /var/log y auditd"
+
+    - id: "chain_nonlegit_descarga_ejecucion_tmp"
+      nombre: "Descarga y ejecución desde ruta temporal"
+      legitimidad: "non-legit"
+      categoria: "descarga_y_ejecucion"
+      severidad_sugerida: "critical"
+      objetivo_simulado: "Detectar transferencia de herramienta o script no aprobado y ejecución inmediata."
+      perfil_sospechoso:
+        usuario: "usuario_interactivo | usuario_servicio"
+        origen: "ssh | proceso_web | cron"
+        ruta: "/tmp | /dev/shm | /var/tmp"
+      eventos_en_orden:
+        - orden: 1
+          event_ref: "auth_ssh_login_success"
+          delta_sugerido: "0s"
+          opcional: true
+        - orden: 2
+          command_ref: "cmd_download_tmp_execute"
+          delta_sugerido: "+30s"
+        - orden: 3
+          command_ref: "cmd_nohup_suspicious_binary"
+          delta_sugerido: "+10s"
+        - orden: 4
+          command_ref: "cmd_ps_process_review"
+          delta_sugerido: "+20s"
+          condicion: "revisión posterior de proceso iniciado"
+      mitre:
+        - "T1105"
+        - "T1059.004"
+      señales_de_alerta:
+        - "Descarga a ruta temporal"
+        - "chmod +x sobre archivo recién descargado"
+        - "Ejecución inmediata"
+        - "Proceso desacoplado con nohup o setsid"
+        - "Conexiones salientes posteriores"
+      resultado_esperado_en_siem:
+        tipo_alerta: "suspicious_download_execute_from_temp"
+        prioridad: "P1"
+        accion_recomendada:
+          - "Obtener hash del archivo"
+          - "Revisar conexiones de red del proceso"
+          - "Buscar el mismo hash en otros hosts"
+          - "Revisar proceso padre"
+
+    - id: "chain_nonlegit_reverse_shell"
+      nombre: "Patrón de shell remota"
+      legitimidad: "non-legit"
+      categoria: "shell_remota"
+      severidad_sugerida: "critical"
+      objetivo_simulado: "Detectar comportamiento compatible con shell inversa o canal interactivo no autorizado."
+      perfil_sospechoso:
+        usuario: "www-data | nginx | apache | usuario_no_admin"
+        origen: "proceso_web | cron | ssh"
+        destino: "ip_externa_no_aprobada"
+      eventos_en_orden:
+        - orden: 1
+          event_ref: "nginx_access_get"
+          delta_sugerido: "0s"
+          opcional: true
+          condicion: "petición anómala o explotación previa"
+        - orden: 2
+          command_ref: "cmd_reverse_shell_bash_pattern"
+          delta_sugerido: "+1s"
+          alternativa:
+            - "cmd_reverse_shell_netcat_pattern"
+            - "cmd_python_reverse_shell_pattern"
+        - orden: 3
+          command_ref: "cmd_ss_listening_ports"
+          delta_sugerido: "+20s"
+          condicion: "verificación de conexión o puertos"
+      mitre:
+        - "T1059.004"
+        - "T1059.006"
+        - "T1105"
+      señales_de_alerta:
+        - "Uso de /dev/tcp o netcat con shell"
+        - "Proceso padre servidor web"
+        - "Conexión saliente a IP no aprobada"
+        - "Shell sin sesión SSH normal"
+      resultado_esperado_en_siem:
+        tipo_alerta: "possible_reverse_shell"
+        prioridad: "P1"
+        accion_recomendada:
+          - "Bloquear destino de red"
+          - "Capturar árbol de procesos"
+          - "Revisar logs web alrededor del evento"
+          - "Buscar persistencia posterior"
+
+    - id: "chain_nonlegit_persistencia_cron"
+      nombre: "Persistencia mediante cron"
+      legitimidad: "non-legit"
+      categoria: "persistencia"
+      severidad_sugerida: "critical"
+      objetivo_simulado: "Detectar creación o modificación sospechosa de tareas programadas."
+      perfil_sospechoso:
+        usuario: "usuario_no_habitual | root"
+        origen: "ssh | shell_interactiva | proceso_web"
+        frecuencia: "muy_frecuente | no_documentada"
+      eventos_en_orden:
+        - orden: 1
+          event_ref: "auth_ssh_login_success"
+          delta_sugerido: "0s"
+          opcional: true
+        - orden: 2
+          command_ref: "cmd_crontab_list"
+          delta_sugerido: "+30s"
+        - orden: 3
+          command_ref: "cmd_cron_persistence"
+          delta_sugerido: "+1m"
+        - orden: 4
+          event_ref: "cron_session_opened"
+          delta_sugerido: "+1m"
+        - orden: 5
+          event_ref: "cron_job_started"
+          delta_sugerido: "+1s"
+        - orden: 6
+          event_ref: "cron_session_closed"
+          delta_sugerido: "+10s"
+      mitre:
+        - "T1053.003"
+        - "T1059.004"
+      señales_de_alerta:
+        - "Entrada cron inline"
+        - "Ejecución desde /tmp, /dev/shm o URL remota"
+        - "Frecuencia anómala"
+        - "Usuario sin historial de administración cron"
+      resultado_esperado_en_siem:
+        tipo_alerta: "suspicious_cron_persistence"
+        prioridad: "P1"
+        accion_recomendada:
+          - "Exportar crontab actual"
+          - "Comparar con baseline"
+          - "Revisar scripts referenciados"
+          - "Validar propietario y timestamps"
+
+    - id: "chain_nonlegit_persistencia_systemd"
+      nombre: "Persistencia mediante systemd"
+      legitimidad: "non-legit"
+      categoria: "persistencia"
+      severidad_sugerida: "critical"
+      objetivo_simulado: "Detectar activación de servicio systemd sospechoso."
+      perfil_sospechoso:
+        usuario: "root | admin_comprometido"
+        origen: "ssh | shell_interactiva"
+        servicio: "servicio_nuevo_o_similar_a_legitimo"
+      eventos_en_orden:
+        - orden: 1
+          event_ref: "auth_ssh_login_success"
+          delta_sugerido: "0s"
+          opcional: true
+        - orden: 2
+          event_ref: "auth_sudo_command"
+          delta_sugerido: "+30s"
+        - orden: 3
+          command_ref: "cmd_systemd_persistence"
+          delta_sugerido: "+1m"
+        - orden: 4
+          event_ref: "systemd_service_started"
+          delta_sugerido: "+5s"
+        - orden: 5
+          event_ref: "systemd_service_reloaded"
+          delta_sugerido: "+10s"
+          opcional: true
+      mitre:
+        - "T1543.002"
+        - "T1548.003"
+      señales_de_alerta:
+        - "Servicio nuevo no documentado"
+        - "Nombre parecido a servicio legítimo"
+        - "ExecStart apunta a ruta temporal o home"
+        - "Activación fuera de ventana de cambio"
+      resultado_esperado_en_siem:
+        tipo_alerta: "suspicious_systemd_persistence"
+        prioridad: "P1"
+        accion_recomendada:
+          - "Inspeccionar unit file"
+          - "Validar ruta ExecStart"
+          - "Revisar usuario de ejecución del servicio"
+          - "Comparar con inventario de servicios aprobados"
+
+    - id: "chain_nonlegit_creacion_usuario_privilegiado"
+      nombre: "Creación de cuenta local con privilegios"
+      legitimidad: "non-legit"
+      categoria: "cuentas_y_privilegios"
+      severidad_sugerida: "critical"
+      objetivo_simulado: "Detectar creación de cuenta local y asignación de privilegios administrativos."
+      perfil_sospechoso:
+        usuario_ejecutor: "root | admin_comprometido"
+        cuenta_creada: "cuenta_nueva_no_autorizada"
+      eventos_en_orden:
+        - orden: 1
+          event_ref: "auth_ssh_login_success"
+          delta_sugerido: "0s"
+          opcional: true
+        - orden: 2
+          event_ref: "auth_sudo_command"
+          delta_sugerido: "+30s"
+        - orden: 3
+          command_ref: "cmd_create_unexpected_user"
+          delta_sugerido: "+10s"
+        - orden: 4
+          command_ref: "cmd_add_user_to_sudo"
+          delta_sugerido: "+10s"
+        - orden: 5
+          command_ref: "cmd_add_ssh_authorized_key"
+          delta_sugerido: "+30s"
+          opcional: true
+      mitre:
+        - "T1136.001"
+        - "T1548.003"
+        - "T1098.004"
+      señales_de_alerta:
+        - "Cuenta creada fuera de proceso IAM"
+        - "Cuenta añadida a sudo, wheel o admin"
+        - "Clave SSH añadida sin autorización"
+        - "Nombre de cuenta parecido a servicio del sistema"
+      resultado_esperado_en_siem:
+        tipo_alerta: "unauthorized_local_admin_account"
+        prioridad: "P1"
+        accion_recomendada:
+          - "Deshabilitar cuenta si no está aprobada"
+          - "Revisar authorized_keys"
+          - "Auditar sudoers y grupos"
+          - "Correlacionar con origen de sesión"
+
+    - id: "chain_nonlegit_busqueda_credenciales"
+      nombre: "Búsqueda de credenciales locales"
+      legitimidad: "non-legit"
+      categoria: "credenciales"
+      severidad_sugerida: "high"
+      objetivo_simulado: "Detectar acceso o búsqueda de secretos en archivos locales."
+      perfil_sospechoso:
+        usuario: "usuario_no_auditor | usuario_servicio | admin_fuera_de_contexto"
+        rutas: "/etc | /home | /var/www | /root"
+      eventos_en_orden:
+        - orden: 1
+          command_ref: "cmd_local_account_discovery"
+          delta_sugerido: "0s"
+        - orden: 2
+          command_ref: "cmd_read_shadow"
+          delta_sugerido: "+20s"
+        - orden: 3
+          command_ref: "cmd_search_credentials_files"
+          delta_sugerido: "+30s"
+        - orden: 4
+          command_ref: "cmd_read_shell_history"
+          delta_sugerido: "+1m"
+          opcional: true
+      mitre:
+        - "T1087.001"
+        - "T1003"
+        - "T1552.001"
+        - "T1552.003"
+      señales_de_alerta:
+        - "Lectura de /etc/shadow"
+        - "Búsqueda de password, token, secret o api_key"
+        - "Lectura de historiales de otros usuarios"
+        - "Ejecución por usuario de servicio"
+      resultado_esperado_en_siem:
+        tipo_alerta: "possible_local_credential_discovery"
+        prioridad: "P1"
+        accion_recomendada:
+          - "Revisar archivos accedidos"
+          - "Rotar secretos potencialmente expuestos"
+          - "Auditar permisos"
+          - "Buscar compresión o transferencia posterior"
+
+    - id: "chain_nonlegit_preparacion_exfiltracion"
+      nombre: "Compresión de datos sensibles y transferencia externa"
+      legitimidad: "non-legit"
+      categoria: "exfiltracion"
+      severidad_sugerida: "critical"
+      objetivo_simulado: "Detectar preparación de datos locales y transferencia a destino no aprobado."
+      perfil_sospechoso:
+        usuario: "usuario_no_backup | usuario_comprometido"
+        destino: "ip_externa | host_no_corporativo"
+        rutas_origen: "/etc | /home | /root | /var/www"
+      eventos_en_orden:
+        - orden: 1
+          command_ref: "cmd_archive_sensitive_data"
+          delta_sugerido: "0s"
+        - orden: 2
+          command_ref: "cmd_external_scp_transfer"
+          delta_sugerido: "+1m"
+        - orden: 3
+          command_ref: "cmd_clear_bash_history"
+          delta_sugerido: "+30s"
+          opcional: true
+      mitre:
+        - "T1005"
+        - "T1048"
+        - "T1070.003"
+      señales_de_alerta:
+        - "Archivo comprimido en /tmp, /dev/shm o /var/tmp"
+        - "Incluye rutas sensibles"
+        - "Transferencia a destino externo"
+        - "Limpieza posterior de historial"
+      resultado_esperado_en_siem:
+        tipo_alerta: "possible_data_staging_and_exfiltration"
+        prioridad: "P1"
+        accion_recomendada:
+          - "Bloquear transferencia si está activa"
+          - "Calcular volumen transferido"
+          - "Identificar archivos incluidos"
+          - "Revisar accesos previos a credenciales"
+
+    - id: "chain_nonlegit_desactivacion_defensas"
+      nombre: "Desactivación de logging, firewall o agentes"
+      legitimidad: "non-legit"
+      categoria: "defense_evasion"
+      severidad_sugerida: "critical"
+      objetivo_simulado: "Detectar intento de reducir visibilidad o controles de seguridad."
+      perfil_sospechoso:
+        usuario: "root | admin_comprometido"
+        servicios_afectados: "auditd | rsyslog | wazuh-agent | falco | firewalld | ufw"
+      eventos_en_orden:
+        - orden: 1
+          event_ref: "auth_sudo_command"
+          delta_sugerido: "0s"
+        - orden: 2
+          command_ref: "cmd_stop_auditd"
+          delta_sugerido: "+10s"
+        - orden: 3
+          command_ref: "cmd_disable_firewall"
+          delta_sugerido: "+20s"
+        - orden: 4
+          event_ref: "systemd_service_stopped"
+          delta_sugerido: "+5s"
+      mitre:
+        - "T1562"
+        - "T1562.012"
+        - "T1686"
+      señales_de_alerta:
+        - "Parada de auditd o rsyslog"
+        - "Desactivación de firewall"
+        - "Stop/disable/mask sobre agentes de seguridad"
+        - "Acción sin ticket de cambio"
+      resultado_esperado_en_siem:
+        tipo_alerta: "security_controls_disabled"
+        prioridad: "P1"
+        accion_recomendada:
+          - "Reactivar controles"
+          - "Validar integridad del host"
+          - "Revisar cambios durante ventana ciega"
+          - "Escalar a respuesta a incidentes"
+
+    - id: "chain_nonlegit_docker_privileged_escape_risk"
+      nombre: "Contenedor privilegiado con montajes sensibles"
+      legitimidad: "non-legit"
+      categoria: "contenedores"
+      severidad_sugerida: "critical"
+      objetivo_simulado: "Detectar ejecución de contenedor con privilegios o acceso sensible al host."
+      perfil_sospechoso:
+        usuario: "usuario_no_devops | admin_comprometido"
+        imagen: "imagen_no_aprobada"
+        flags: "privileged | docker.sock | mount_root"
+      eventos_en_orden:
+        - orden: 1
+          command_ref: "cmd_docker_ps"
+          delta_sugerido: "0s"
+        - orden: 2
+          command_ref: "cmd_docker_privileged_host_mount"
+          delta_sugerido: "+30s"
+        - orden: 3
+          event_ref: "docker_container_start"
+          delta_sugerido: "+5s"
+      mitre:
+        - "T1610"
+        - "T1609"
+      señales_de_alerta:
+        - "Uso de --privileged"
+        - "Montaje de /"
+        - "Montaje de /var/run/docker.sock"
+        - "Imagen no aprobada"
+        - "Usuario fuera del equipo DevOps"
+      resultado_esperado_en_siem:
+        tipo_alerta: "privileged_container_with_sensitive_mount"
+        prioridad: "P1"
+        accion_recomendada:
+          - "Detener contenedor si no está autorizado"
+          - "Revisar montajes"
+          - "Auditar imagen"
+          - "Revisar actividad dentro del contenedor"
+
+    - id: "chain_nonlegit_modificacion_permisos_sensibles"
+      nombre: "Modificación insegura de permisos en rutas sensibles"
+      legitimidad: "non-legit"
+      categoria: "permisos"
+      severidad_sugerida: "high"
+      objetivo_simulado: "Detectar cambios peligrosos de permisos o propietario en rutas críticas."
+      perfil_sospechoso:
+        usuario: "root | admin_comprometido"
+        rutas: "/etc | /root | /usr/bin | /var/log"
+      eventos_en_orden:
+        - orden: 1
+          event_ref: "auth_sudo_command"
+          delta_sugerido: "0s"
+        - orden: 2
+          command_ref: "cmd_chmod_world_writable_sensitive"
+          delta_sugerido: "+10s"
+        - orden: 3
+          command_ref: "cmd_change_ownership_sensitive"
+          delta_sugerido: "+20s"
+          opcional: true
+      mitre:
+        - "T1222.002"
+      señales_de_alerta:
+        - "chmod 777 sobre rutas sensibles"
+        - "Cambio de propietario en archivos críticos"
+        - "Permisos modificados antes de escritura o ejecución"
+      resultado_esperado_en_siem:
+        tipo_alerta: "dangerous_permission_change"
+        prioridad: "P2"
+        accion_recomendada:
+          - "Restaurar permisos desde baseline"
+          - "Revisar quién ejecutó el cambio"
+          - "Buscar modificaciones posteriores en archivos afectados"
+
+    - id: "chain_nonlegit_web_to_shell"
+      nombre: "Actividad web seguida de ejecución de comandos"
+      legitimidad: "non-legit"
+      categoria: "web_compromise"
+      severidad_sugerida: "critical"
+      objetivo_simulado: "Detectar posible explotación web o webshell que deriva en ejecución de comandos."
+      perfil_sospechoso:
+        usuario_proceso: "www-data | nginx | apache"
+        origen_http: "ip_externa"
+        proceso_padre: "nginx | apache2 | php-fpm"
+      eventos_en_orden:
+        - orden: 1
+          event_ref: "nginx_access_get"
+          delta_sugerido: "0s"
+          condicion: "URI anómala, error 4xx/5xx repetido o patrón de explotación"
+        - orden: 2
+          command_ref: "cmd_webshell_like_execution"
+          delta_sugerido: "+1s"
+        - orden: 3
+          command_ref: "cmd_local_account_discovery"
+          delta_sugerido: "+10s"
+          opcional: true
+        - orden: 4
+          command_ref: "cmd_download_tmp_execute"
+          delta_sugerido: "+30s"
+          opcional: true
+      mitre:
+        - "T1190"
+        - "T1059"
+        - "T1087.001"
+        - "T1105"
+      señales_de_alerta:
+        - "Comandos ejecutados por usuario web"
+        - "Intérprete con código inline"
+        - "Descarga posterior a /tmp"
+        - "Secuencia web -> shell -> reconocimiento"
+      resultado_esperado_en_siem:
+        tipo_alerta: "possible_webshell_or_web_compromise"
+        prioridad: "P1"
+        accion_recomendada:
+          - "Revisar access.log y error.log"
+          - "Buscar archivos web modificados recientemente"
+          - "Capturar árbol de procesos"
+          - "Aislar aplicación si hay ejecución activa"
+
+    - id: "chain_nonlegit_tunel_ssh"
+      nombre: "Túnel SSH reverso o canal no autorizado"
+      legitimidad: "non-legit"
+      categoria: "tunneling"
+      severidad_sugerida: "critical"
+      objetivo_simulado: "Detectar túneles no autorizados hacia infraestructura externa."
+      perfil_sospechoso:
+        usuario: "usuario_interactivo | admin_comprometido"
+        destino: "host_externo_no_aprobado"
+        duracion: "larga"
+      eventos_en_orden:
+        - orden: 1
+          event_ref: "auth_ssh_login_success"
+          delta_sugerido: "0s"
+          opcional: true
+        - orden: 2
+          command_ref: "cmd_ssh_reverse_tunnel"
+          delta_sugerido: "+1m"
+        - orden: 3
+          command_ref: "cmd_socat_tunnel_pattern"
+          delta_sugerido: "+30s"
+          opcional: true
+        - orden: 4
+          command_ref: "cmd_ss_listening_ports"
+          delta_sugerido: "+1m"
+          opcional: true
+      mitre:
+        - "T1572"
+      señales_de_alerta:
+        - "Uso de ssh -R"
+        - "Destino externo"
+        - "Sesión larga sin actividad interactiva normal"
+        - "Proceso persistente con autossh, nohup o setsid"
+      resultado_esperado_en_siem:
+        tipo_alerta: "unauthorized_tunnel"
+        prioridad: "P1"
+        accion_recomendada:
+          - "Bloquear destino externo"
+          - "Revisar procesos ssh activos"
+          - "Validar reglas de salida"
+          - "Correlacionar con autenticación previa"

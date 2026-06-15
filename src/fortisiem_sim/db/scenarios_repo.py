@@ -51,11 +51,12 @@ def _load_phase_events(conn: sqlite3.Connection, phase_id: int) -> list:
 
     return [
         ScenarioEvent(
-            id=ev["event_id"],
+            id=ev["event_id"] or "",
             count=int(ev["count"]),
             actor=str(ev["actor"] or ""),
             overrides=json.loads(ev["overrides_json"] or "{}"),
             sort_order=int(ev["sort_order"]),
+            chain_id=str(ev["chain_id"] if "chain_id" in ev.keys() else ""),
         )
         for ev in conn.execute(
             """
@@ -140,6 +141,8 @@ def load_scenario_model(scenario_id: str, assets: dict[str, Any] | None = None) 
             emails: list[ScenarioEmail] = []
             if ptype == "email":
                 emails = _load_phase_emails(conn, ph_row["id"])
+            elif ptype == "chain":
+                events = _load_phase_events(conn, ph_row["id"])
             else:
                 events = _load_phase_events(conn, ph_row["id"])
                 emails = _load_phase_emails(conn, ph_row["id"])
@@ -218,6 +221,30 @@ def builder_payload(scenario_id: str, assets: dict[str, Any] | None = None) -> d
                     "emails": emails,
                 })
                 continue
+            if ptype == "chain":
+                chains = [
+                    {
+                        "chain_id": str(ev["chain_id"] if "chain_id" in ev.keys() else ""),
+                        "actor": ev["actor"] or "",
+                        "sort_order": int(ev["sort_order"]),
+                    }
+                    for ev in conn.execute(
+                        """
+                        SELECT * FROM scenario_phase_events
+                        WHERE phase_id = ?
+                        ORDER BY sort_order, id
+                        """,
+                        (ph_row["id"],),
+                    )
+                    if str(ev["chain_id"] if "chain_id" in ev.keys() else "").strip()
+                ]
+                phases_out.append({
+                    "phase_type": "chain",
+                    "name": ph_row["slug"],
+                    "description": ph_row["description"],
+                    "chains": chains,
+                })
+                continue
             if not mitre_tactic:
                 mitre_tactic = guess_tactic_from_phase(ph_row["slug"], ph_row["description"])
             tactic = tactic_by_id(mitre_tactic) if mitre_tactic else None
@@ -225,6 +252,7 @@ def builder_payload(scenario_id: str, assets: dict[str, Any] | None = None) -> d
             events = [
                 {
                     "id": ev["event_id"],
+                    "chain_id": str(ev["chain_id"] if "chain_id" in ev.keys() else ""),
                     "count": ev["count"],
                     "actor": ev["actor"] or "",
                     "sort_order": int(ev["sort_order"]),
@@ -358,6 +386,40 @@ def save_from_builder(
                         ),
                     )
                 continue
+            if ptype == "chain":
+                slug = str(ph.get("name", f"chain_{pi}")).strip().replace(" ", "_").lower()
+                cur = conn.execute(
+                    """
+                    INSERT INTO scenario_phases (
+                        scenario_id, slug, description, phase_type,
+                        mitre_tactic, mitre_techniques_json, sort_order
+                    ) VALUES (?, ?, ?, 'chain', '', '[]', ?)
+                    """,
+                    (scenario_id, slug, ph.get("description", ""), pi),
+                )
+                phase_id = cur.lastrowid
+                chain_items = ph.get("chains") or [
+                    e for e in ph.get("events", [])
+                    if str(e.get("chain_id", "")).strip()
+                ]
+                for ci, ch in enumerate(chain_items):
+                    conn.execute(
+                        """
+                        INSERT INTO scenario_phase_events (
+                            phase_id, event_id, count, actor, overrides_json, sort_order, chain_id
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            phase_id,
+                            "",
+                            1,
+                            str(ch.get("actor", "")),
+                            json.dumps(ch.get("overrides") or {}),
+                            int(ch.get("sort_order", ci)),
+                            str(ch.get("chain_id", "")),
+                        ),
+                    )
+                continue
             tactic = tactic_by_id(str(ph.get("mitre_tactic", ""))) if ph.get("mitre_tactic") else None
             slug = tactic["slug"] if tactic else str(ph.get("name", f"phase_{pi}")).strip().replace(" ", "_")
             cur = conn.execute(
@@ -406,16 +468,17 @@ def save_from_builder(
                     conn.execute(
                         """
                         INSERT INTO scenario_phase_events (
-                            phase_id, event_id, count, actor, overrides_json, sort_order
-                        ) VALUES (?, ?, ?, ?, ?, ?)
+                            phase_id, event_id, count, actor, overrides_json, sort_order, chain_id
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             phase_id,
-                            item["id"],
+                            str(item.get("id", "")),
                             int(item.get("count", 1)),
                             str(item.get("actor", "")),
                             json.dumps(item.get("overrides") or {}),
                             order,
+                            str(item.get("chain_id", "")),
                         ),
                     )
         conn.commit()

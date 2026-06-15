@@ -198,6 +198,24 @@ _SLUG_ALIASES: dict[str, str] = {
 
 
 # Mapeo evento → tácticas MITRE + técnicas (TTP)
+
+TTP_SLUG_TO_MITRE: dict[str, dict[str, list[str]]] = {
+    "initial-access": {"tactics": ["TA0001"], "techniques": ["T1078", "T1133"]},
+    "credential-access": {"tactics": ["TA0006"], "techniques": ["T1110", "T1078"]},
+    "execution": {"tactics": ["TA0002"], "techniques": ["T1059"]},
+    "command-and-control": {"tactics": ["TA0011"], "techniques": ["T1071", "T1090"]},
+    "lateral-movement": {"tactics": ["TA0008"], "techniques": ["T1021"]},
+    "defense-evasion": {"tactics": ["TA0005"], "techniques": ["T1078"]},
+    "impact": {"tactics": ["TA0040"], "techniques": ["T1486"]},
+    "discovery": {"tactics": ["TA0007"], "techniques": ["T1046"]},
+}
+
+FORTIGATE_PLACEHOLDERS = [
+    "user", "username", "remote_access_ip", "vpn_remote_ip", "vpn_gateway_ip",
+    "vpn_assigned_ip", "victim_ip", "devname", "devserial", "fortigate_hostname",
+    "fortigate_serial", "reporting_ip", "country", "tunnel_id", "opid", "date", "time",
+]
+
 EVENT_MITRE: dict[str, dict[str, list[str]]] = {
     "login_success": {"tactics": ["TA0001"], "techniques": ["T1078"]},
     "login_failed": {"tactics": ["TA0001", "TA0006"], "techniques": ["T1078", "T1110"]},
@@ -239,6 +257,11 @@ def _sync_suggested_events_from_catalog() -> None:
         ][:6]
 
 
+def mitre_from_ttp_slug(slug: str) -> dict[str, list[str]]:
+    key = (slug or "").strip().lower().replace("_", "-")
+    return dict(TTP_SLUG_TO_MITRE.get(key, {"tactics": [], "techniques": []}))
+
+
 def event_mitre_meta(event_id: str, tmpl: Any) -> dict[str, list[str]]:
     if event_id in EVENT_MITRE:
         return EVENT_MITRE[event_id]
@@ -251,6 +274,11 @@ def event_mitre_meta(event_id: str, tmpl: Any) -> dict[str, list[str]]:
                 tactics.append(s.upper())
             elif s.upper().startswith("T"):
                 techniques.append(s)
+    ttp_slug = str(getattr(tmpl, "ttp", "") or "").strip()
+    if ttp_slug:
+        mapped = mitre_from_ttp_slug(ttp_slug)
+        if mapped.get("tactics") or mapped.get("techniques"):
+            return mapped
     return {"tactics": tactics, "techniques": techniques}
 
 
@@ -273,14 +301,21 @@ def build_event_catalog(templates: dict[str, Any]) -> list[dict[str, Any]]:
     for event_id in sorted(templates.keys()):
         tmpl = templates[event_id]
         meta = event_mitre_meta(event_id, tmpl)
+        fmt = getattr(tmpl, "format", "")
+        cat = getattr(tmpl, "category", "")
         catalog.append({
             "id": event_id,
             "name": getattr(tmpl, "name", event_id),
-            "format": getattr(tmpl, "format", ""),
+            "format": fmt,
             "system": event_system_label(tmpl),
+            "category": cat,
+            "action": str(getattr(tmpl, "action", "") or ""),
             "severity": getattr(tmpl, "severity", ""),
+            "ttp_slug": str(getattr(tmpl, "ttp", "") or ""),
             "tactics": meta.get("tactics", []),
             "techniques": meta.get("techniques", []),
+            "is_fortigate": fmt == "fortigate" or getattr(tmpl, "source_system", "") == "fortigate",
+            "placeholders": FORTIGATE_PLACEHOLDERS if fmt == "fortigate" else [],
         })
     return catalog
 
@@ -367,7 +402,8 @@ def phase_technique_ids(phase: Any) -> list[str]:
 
 def phase_tactic_id(phase: Any) -> str:
     """ID de táctica MITRE (TAxxxx) asociada a la fase."""
-    if getattr(phase, "phase_type", "mitre") == "email":
+    ptype = getattr(phase, "phase_type", "mitre")
+    if ptype in {"email", "chain"}:
         return ""
     tactic_id = str(getattr(phase, "mitre_tactic", "") or "").strip().upper()
     if tactic_id:
@@ -379,8 +415,11 @@ def phase_tactic_id(phase: Any) -> str:
 
 def phase_tactic_name(phase: Any) -> str:
     """Nombre legible de la táctica MITRE (p. ej. Initial Access)."""
-    if getattr(phase, "phase_type", "mitre") == "email":
+    ptype = getattr(phase, "phase_type", "mitre")
+    if ptype == "email":
         return "Correo"
+    if ptype == "chain":
+        return "Cadena Linux"
     tid = phase_tactic_id(phase)
     if not tid:
         return ""
@@ -390,16 +429,22 @@ def phase_tactic_name(phase: Any) -> str:
 
 def phase_technique_label(phase: Any) -> str:
     """Solo IDs de técnica MITRE (p. ej. T1078, T1110)."""
-    if getattr(phase, "phase_type", "mitre") == "email":
+    ptype = getattr(phase, "phase_type", "mitre")
+    if ptype == "email":
         return "Correo"
+    if ptype == "chain":
+        return "Cadena"
     techs = phase_technique_ids(phase)
     return ", ".join(techs) if techs else "—"
 
 
 def phase_run_display_label(phase: Any) -> str:
     """Etiqueta para UI: táctica + técnicas."""
-    if getattr(phase, "phase_type", "mitre") == "email":
+    ptype = getattr(phase, "phase_type", "mitre")
+    if ptype == "email":
         return "Correo"
+    if ptype == "chain":
+        return "Cadena Linux"
     tactic = phase_tactic_name(phase)
     techs = phase_technique_label(phase)
     if tactic and techs and techs != "—":

@@ -38,7 +38,12 @@ def _resolve_syslog_hostname(template: EventTemplate, ctx: dict[str, str]) -> st
 
 
 def _pick(pool: list[str], fallback: str) -> str:
-    return random.choice(pool) if pool else fallback
+    if not pool:
+        return fallback
+    choice = random.choice(pool)
+    if isinstance(choice, dict):
+        return str(choice.get("username") or choice.get("samaccountname") or fallback)
+    return str(choice) if choice else fallback
 
 
 def resolve_actor(scenario: Scenario, actor_name: str) -> ActorProfile:
@@ -105,6 +110,12 @@ def build_context(
         "domain": domain,
         "org_id": str(scenario.org_id),
         "country": "ES",
+        "remote_access_ip": src_ip,
+        "vpn_remote_ip": src_ip,
+        "vpn_gateway_ip": profile.extra.get("vpn_gateway_ip", reporting_ip),
+        "vpn_assigned_ip": profile.extra.get("vpn_assigned_ip", "10.212.134.55"),
+        "victim_ip": lateral_dst,
+        "tunnel_id": str(random.randint(1000, 9999)),
         "action": "simulated",
         "severity": template.severity,
         "process": "simulated-process",
@@ -118,10 +129,21 @@ def build_context(
         "dst_port": "443",
         "simulation_marker": options.simulation_marker,
     }
+    try:
+        from .storage import use_sql_storage
+
+        if use_sql_storage():
+            from .db.context_repo import merge_sql_context
+
+            ctx = merge_sql_context(ctx)
+    except ImportError:
+        pass
     # defaults de plantilla + extra de actor + overrides del evento (en este orden de prioridad)
     ctx.update(template.defaults)
     ctx.update(profile.extra)
     ctx.update(overrides)
+    if "username" not in ctx and "user" in ctx:
+        ctx["username"] = ctx["user"]
     return ctx
 
 

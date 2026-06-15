@@ -42,6 +42,42 @@ scapy>=2.5.0
 PyYAML>=6.0
 ```
 
+## Modelo SQL (lab inventory)
+
+Todo el inventario lab, plantillas de eventos y campañas viven en **una sola base SQLite** (`config/fortisiem.db`). Los CSV de `fortisiem-synthetic-senders` son solo entrada de importación; en runtime no se leen.
+
+```bash
+export FORTISIEM_SIM_DB=/ruta/a/fortisiem-sim/config/fortisiem.db   # opcional si usas la ruta por defecto
+export FORTISIEM_SIM_STORAGE=sql   # forzar SQLite (default si existe fortisiem.db)
+
+python3 -m fortisiem_sim db init
+python3 -m fortisiem_sim db migrate
+python3 -m fortisiem_sim db import-csv    # una vez: CSV → SQL
+python3 -m fortisiem_sim db status
+
+# Solo VPN (13 plantillas fortigate/vpn + contexto SQL)
+python3 -m fortisiem_sim send-vpn --count 120 --rate 5 --dry-run
+python3 -m fortisiem_sim send-vpn --remote-access-ip 203.0.113.77 --send --no-spoof
+
+# Escenario desde SQL
+python3 -m fortisiem_sim ransomware --dry-run
+```
+
+Import manual (equivalente):
+
+```bash
+python3 scripts/migrate_csv_to_sql.py --csv-root ../fortisiem-synthetic-senders
+```
+
+**Synthetic senders** (`fortisiem-synthetic-senders`) leen la misma BD vía `FORTISIEM_SIM_DB`:
+
+```bash
+export FORTISIEM_SIM_DB=/ruta/a/fortisiem-sim/config/fortisiem.db
+PYTHONPATH=src python3 -m fortisiem_send.cli.fortigate_vpn --count 50 --dry-run
+```
+
+Legacy YAML: `FORTISIEM_SIM_STORAGE=yaml` sigue usando `templates/events.yaml` y `config/assets.yaml`.
+
 ## Uso rápido (simple)
 
 Hay dos formas. La **más simple** es el wrapper `./fsim` (no necesitas activar el venv ni escribir `sudo`/rutas):
@@ -84,7 +120,7 @@ UI Flask con tres pestañas:
 | Pestaña | Función |
 |---------|---------|
 | **Ejecutar** | Instanciar fases con SSE en vivo o batch |
-| **Config** | AD falso (dominio, usuarios), firewalls, hosts Windows/Linux, pools IP → `config/assets.yaml` |
+| **Config** | AD falso (dominio, usuarios), firewalls, hosts Windows/Linux, pools IP → SQLite `lab_assets` / `ad_users` |
 | **Escenario** | Constructor gráfico de fases/eventos; guarda YAML en `scenarios/` |
 
 ```bash
